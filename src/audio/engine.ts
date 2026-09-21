@@ -18,6 +18,43 @@ import { pickTaunt, speakTaunt, type Taunt } from './taunts.js';
 /** Where a taunt comes from, vertically: roughly the ghost's mouth. */
 const GHOST_MOUTH_HEIGHT = 1.75;
 
+/**
+ * The survivors' theme, and the slice of it that loops.
+ *
+ * The opening of the track is an introduction — it announces itself, which is
+ * the opposite of what a bed should do. The passage from 0:15 is the part that
+ * sits still enough to hear a floorboard over, so that is the loop, and the
+ * file is only ever played from there.
+ */
+const MUSIC_URL = 'assets/night-theme.mp3';
+const MUSIC_LOOP_START = 15;
+const MUSIC_LOOP_END = 27;
+
+/**
+ * How loud the music sits under everything else.
+ *
+ * Larger than it looks, because the source file is quiet: the track peaks
+ * around 0.11 and averages 0.03, roughly a tenth of a normally mastered one,
+ * and that is true of the whole file rather than of the looped passage. A
+ * gain under 1 on top of that was inaudible under the ambient bed — the first
+ * two attempts here, 0.16 and 0.30, both failed for that reason alone.
+ *
+ * So this compensates for the file first and sets the balance second. The
+ * effective level is what matters: at 0.4 the theme lands around 0.011 RMS,
+ * far below the ambient bed at 0.14 and the world bus at 1.0 that carries
+ * footsteps and the ghost. It is meant to be only just there — something you
+ * notice in a quiet moment and lose the instant anything happens.
+ *
+ * The ceiling is set by what it must never mask. A footstep at the edge of
+ * hearing has to stay the most noticeable new thing in the mix, because with
+ * no minimap it is the only warning a survivor gets. If the track is ever
+ * replaced with a louder master, this must come down to match.
+ */
+const MUSIC_GAIN = 0.4;
+
+/** Seconds the theme takes to fade up, so it arrives rather than starts. */
+const MUSIC_FADE = 2.5;
+
 export class AudioEngine {
   readonly ctx: AudioContext;
   private readonly master: GainNode;
@@ -38,6 +75,17 @@ export class AudioEngine {
 
   /** The house's own voice: drone, wind, creaks. Started on resume. */
   private ambience: Ambience | null = null;
+  /**
+   * The survivors' theme, and the bus that keeps it underneath everything.
+   *
+   * Music is the one sound here that carries no information — every other
+   * cue tells you where something is or what it did, and a bed loud enough
+   * to mask a footstep would be trading the game's only warning system for
+   * atmosphere. So it gets its own gain, set well below the world, and is
+   * never routed through the panner: it is not in the house with you.
+   */
+  private music: { source: AudioBufferSourceNode; gain: GainNode } | null = null;
+  private readonly musicBus: GainNode;
 
   /** Sim time the ghost may next speak, so lines never overlap. */
   private tauntFreeAt = 0;
@@ -50,8 +98,11 @@ export class AudioEngine {
     this.master.gain.value = 0.9;
     this.world = this.ctx.createGain();
     this.ui = this.ctx.createGain();
+    this.musicBus = this.ctx.createGain();
+    this.musicBus.gain.value = MUSIC_GAIN;
     this.world.connect(this.master);
     this.ui.connect(this.master);
+    this.musicBus.connect(this.master);
     this.master.connect(this.ctx.destination);
 
     // Inverse-distance rolloff throughout, which is how real sound behaves and
@@ -78,6 +129,68 @@ export class AudioEngine {
    */
   startAmbience(): void {
     if (!this.ambience) this.ambience = new Ambience(this.ctx, this.world);
+  }
+
+  /**
+   * Start the survivors' theme, looping the chosen passage.
+   *
+   * Survivors only: the ghost hears the house, not a soundtrack, and giving
+   * it one would both soften the role and mask the footsteps it hunts by.
+   *
+   * A decode failure is deliberately silent. Music is the one thing here the
+   * game plays fine without, and a missing file should cost atmosphere, not
+   * the match.
+   */
+  async startMusic(): Promise<void> {
+    if (this.music) return;
+    try {
+      const base = import.meta.env.BASE_URL || '/';
+      const url = (base.endsWith('/') ? base : `${base}/`) + MUSIC_URL;
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const buf = await this.ctx.decodeAudioData(await res.arrayBuffer());
+
+      /*
+       * Clamp the loop to what the file actually contains.
+       *
+       * `loopEnd` past the end of a buffer is not an error in the Web Audio
+       * spec — it simply loops the whole thing, so a shorter file than
+       * expected would quietly play the introduction this is meant to skip.
+       */
+      const end = Math.min(MUSIC_LOOP_END, buf.duration);
+      const start = Math.min(MUSIC_LOOP_START, Math.max(0, end - 1));
+
+      const source = this.ctx.createBufferSource();
+      source.buffer = buf;
+      source.loop = true;
+      source.loopStart = start;
+      source.loopEnd = end;
+
+      const gain = this.ctx.createGain();
+      const t = this.ctx.currentTime;
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(1, t + MUSIC_FADE);
+      source.connect(gain).connect(this.musicBus);
+
+      // Begin inside the loop, not at the top of the file.
+      source.start(0, start);
+      this.music = { source, gain };
+    } catch {
+      /* No music is survivable; a thrown error mid-match is not. */
+    }
+  }
+
+  /** Stop the theme, fading out so it does not cut mid-phrase. */
+  stopMusic(): void {
+    const m = this.music;
+    if (!m) return;
+    this.music = null;
+    const t = this.ctx.currentTime;
+    m.gain.gain.cancelScheduledValues(t);
+    m.gain.gain.setValueAtTime(m.gain.gain.value, t);
+    m.gain.gain.linearRampToValueAtTime(0, t + 0.6);
+    try { m.source.stop(t + 0.7); } catch { /* already stopped */ }
+    m.source.onended = () => { m.source.disconnect(); m.gain.disconnect(); };
   }
 
   /** How close the ghost feels, 0..1. Darkens the ambient bed. */

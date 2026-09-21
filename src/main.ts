@@ -386,6 +386,16 @@ async function start(
   }
 
   audio.startAmbience();
+  /*
+   * The survivors get a theme; the ghost gets the house.
+   *
+   * Asymmetric on purpose. Music is company, and the survivor's problem is
+   * being alone in the dark — a bed under that is a small mercy and a way to
+   * feel the match's shape. The ghost's whole advantage is hearing, so giving
+   * it a soundtrack would both blunt the role and mask the footsteps it hunts
+   * by.
+   */
+  if (role !== 'ghost') void audio.startMusic();
 
   resize();
   /*
