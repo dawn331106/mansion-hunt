@@ -51,13 +51,18 @@ export const GHOST = {
   /**
    * Stalking pace, used whenever the ghost has not seen anyone.
    *
-   * Slower than a survivor's 2.6 walk, deliberately. A hunter that matches
-   * your speed while it is merely searching turns the whole match into a
-   * chase, and a chase with no lulls stops being frightening after a minute.
-   * At this pace you can walk away from a ghost that has not spotted you,
-   * which makes the moment it *does* spot you mean something.
+   * Well under a survivor's 2.6 walk, deliberately. A hunter that keeps pace
+   * while it is merely searching turns the whole match into a chase, and a
+   * chase with no lulls stops being frightening after a minute.
+   *
+   * At 1.9 it was close enough to a walk that crossing a room in the open
+   * still felt like fleeing — the margin was there arithmetically but not in
+   * play, because the ghost cuts corners a survivor has to walk around. A
+   * third under walking pace gives back the thing the stalk is for: room to
+   * move, listen, and decide, so that being seen is a change of state rather
+   * than a change of degree.
    */
-  walkSpeed: 1.9,
+  walkSpeed: 1.25,
   /**
    * Chase pace, unlocked only while a survivor is in sight.
    *
