@@ -12,7 +12,8 @@
     "controls": "tsx tools/controls.mjs",
     "checkmap": "tsx tools/checkmap.mjs",
     "voicetest": "tsx tools/voicetest.mjs",
-    "hidetest": "tsx tools/hidetest.mjs"
+    "hidetest": "tsx tools/hidetest.mjs",
+    "ambiencetest": "tsx tools/ambiencetest.mjs"
   },
   "dependencies": {
     "three": "^0.169.0"

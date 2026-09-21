@@ -21,7 +21,17 @@
  */
 
 export class Ambience {
-  private readonly out: GainNode;
+  /**
+   * The bus every layer feeds.
+   *
+   * Readable so `tools/ambiencetest.mjs` can measure the layers against each
+   * other; nothing in the game writes to it from outside.
+   */
+  readonly out: GainNode;
+  /** The continuous layers: drone and wind. Deliberately quiet. */
+  private readonly bed!: GainNode;
+  /** One-off sounds: creaks, knocks, howls, dogs, crying. */
+  private readonly events!: GainNode;
   private readonly nodes: { stop?: () => void; disconnect(): void }[] = [];
   private readonly drone: { osc: OscillatorNode[]; gain: GainNode } | null = null;
   private filter: BiquadFilterNode | null = null;
@@ -38,6 +48,48 @@ export class Ambience {
     this.out = ctx.createGain();
     this.out.gain.value = 0;
     this.out.connect(destination);
+
+    /*
+     * Two buses: the bed, and the things that happen.
+     *
+     * Everything used to share one, and the events were written at gains that
+     * look reasonable in isolation — 0.045 for a bark, 0.03 for a sob — but
+     * which sat at almost exactly the level of the drone and wind they had to
+     * cut through. Measured, every event came out between 1.00x and 1.05x the
+     * bed, which is another way of saying inaudible.
+     *
+     * The fix is at both ends. The event gains themselves were an order of
+     * magnitude too small — no bus multiplier large enough to rescue them
+     * would have left any headroom — and the drone and wind were loud enough
+     * that nothing short of a shout could get over them. A bed is meant to be
+     * felt rather than listened to, so it belongs well under whatever happens
+     * on top of it.
+     * `tools/ambiencetest.mjs` measures the ratio and fails below 1.5x.
+     */
+    this.bed = ctx.createGain();
+    this.bed.gain.value = 0.28;
+    this.bed.connect(this.out);
+
+    this.events = ctx.createGain();
+    this.events.gain.value = 1.6;
+
+    /*
+     * A limiter on the event bus.
+     *
+     * Events fire independently and occasionally land on top of each other —
+     * a howl during a knock during a creak — and with them now at an audible
+     * level that stack measured just over full scale and clipped. A
+     * compressor with a hard ratio and a fast attack costs nothing and means
+     * the loud case is squashed rather than distorted; without it the rare
+     * coincidence is the one that sounds broken.
+     */
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -6;
+    limiter.knee.value = 3;
+    limiter.ratio.value = 12;
+    limiter.attack.value = 0.004;
+    limiter.release.value = 0.18;
+    this.events.connect(limiter).connect(this.out);
 
     this.drone = this.buildDrone();
     this.buildWind();
@@ -85,7 +137,7 @@ export class Ambience {
     lfo.start();
     this.nodes.push({ stop: () => { try { lfo.stop(); } catch { /* stopped */ } }, disconnect: () => lfo.disconnect() });
 
-    lp.connect(gain).connect(this.out);
+    lp.connect(gain).connect(this.bed);
     return { osc, gain };
   }
 
@@ -130,7 +182,7 @@ export class Ambience {
     const gain = this.ctx.createGain();
     gain.gain.value = 0.30;
 
-    src.connect(bp).connect(gain).connect(this.out);
+    src.connect(bp).connect(gain).connect(this.bed);
     src.start();
 
     this.nodes.push({ stop: () => { try { src.stop(); lfo.stop(); } catch { /* stopped */ } },
@@ -178,7 +230,7 @@ export class Ambience {
       o.start(t);
       o.stop(t + dur + 0.1);
     }
-    lp.connect(g).connect(this.out);
+    lp.connect(g).connect(this.bed);
   }
 
   /**
@@ -197,7 +249,8 @@ export class Ambience {
     }, wait);
   }
 
-  private playEvent(): void {
+  /** @internal — exposed for `tools/ambiencetest.mjs`. */
+  playEvent(): void {
     const t = this.ctx.currentTime;
     const kind = Math.random();
 
@@ -223,9 +276,9 @@ export class Ambience {
       bp.Q.value = 6;
       const g = this.ctx.createGain();
       g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(0.05, t + 0.12);
+      g.gain.linearRampToValueAtTime(0.85, t + 0.12);
       g.gain.exponentialRampToValueAtTime(0.0005, t + 1.1);
-      o.connect(bp).connect(g).connect(this.out);
+      o.connect(bp).connect(g).connect(this.events);
       o.start(t);
       o.stop(t + 1.2);
     } else if (kind < 0.72) {
@@ -237,9 +290,9 @@ export class Ambience {
         o.frequency.setValueAtTime(90, at);
         o.frequency.exponentialRampToValueAtTime(42, at + 0.14);
         const g = this.ctx.createGain();
-        g.gain.setValueAtTime(0.10, at);
+        g.gain.setValueAtTime(0.42, at);
         g.gain.exponentialRampToValueAtTime(0.0005, at + 0.22);
-        o.connect(g).connect(this.out);
+        o.connect(g).connect(this.events);
         o.start(at);
         o.stop(at + 0.3);
       }
@@ -255,8 +308,8 @@ export class Ambience {
       hp.type = 'highpass';
       hp.frequency.value = 2400;
       const g = this.ctx.createGain();
-      g.gain.value = 0.035;
-      src.connect(hp).connect(g).connect(this.out);
+      g.gain.value = 0.40;
+      src.connect(hp).connect(g).connect(this.events);
       src.start(t);
     }
   }
@@ -270,11 +323,12 @@ export class Ambience {
    * synthesiser, because a single clean tone sounds electronic however it
    * is shaped.
    */
-  private howl(t: number): void {
+  /** @internal — exposed for `tools/ambiencetest.mjs`. */
+  howl(t: number): void {
     const dur = 2.6 + Math.random() * 1.2;
     const base = 220 + Math.random() * 90;
 
-    for (const [mult, level, delay] of [[1, 0.055, 0], [1.006, 0.04, 0.14]] as const) {
+    for (const [mult, level, delay] of [[1, 0.42, 0], [1.006, 0.30, 0.14]] as const) {
       const o = this.ctx.createOscillator();
       o.type = 'sawtooth';
       const at = t + delay;
@@ -299,7 +353,7 @@ export class Ambience {
       g.gain.setValueAtTime(level, at + dur * 0.6);
       g.gain.exponentialRampToValueAtTime(0.0004, at + dur);
 
-      o.connect(bp).connect(lp).connect(g).connect(this.out);
+      o.connect(bp).connect(lp).connect(g).connect(this.events);
       o.start(at);
       o.stop(at + dur + 0.2);
     }
@@ -314,7 +368,8 @@ export class Ambience {
    * Barks are short filtered bursts at irregular intervals, because a regular
    * rhythm reads as a machine.
    */
-  private hounds(t: number): void {
+  /** @internal — exposed for `tools/ambiencetest.mjs`. */
+  hounds(t: number): void {
     const barks = 3 + Math.floor(Math.random() * 5);
     let at = t;
     for (let i = 0; i < barks; i++) {
@@ -336,10 +391,10 @@ export class Ambience {
 
       const g = this.ctx.createGain();
       g.gain.setValueAtTime(0, at);
-      g.gain.linearRampToValueAtTime(0.045, at + 0.012);
+      g.gain.linearRampToValueAtTime(0.34, at + 0.012);
       g.gain.exponentialRampToValueAtTime(0.0004, at + dur);
 
-      o.connect(bp).connect(lp).connect(g).connect(this.out);
+      o.connect(bp).connect(lp).connect(g).connect(this.events);
       o.start(at);
       o.stop(at + dur + 0.05);
 
@@ -357,7 +412,8 @@ export class Ambience {
    * heavily filtered so it is never quite clear enough to locate, which is
    * the point: you are never sure whether you heard it.
    */
-  private crying(t: number): void {
+  /** @internal — exposed for `tools/ambiencetest.mjs`. */
+  crying(t: number): void {
     const sobs = 4 + Math.floor(Math.random() * 4);
     const base = 300 + Math.random() * 80;
 
@@ -366,7 +422,7 @@ export class Ambience {
     const lp = this.ctx.createBiquadFilter();
     lp.type = 'lowpass';
     lp.frequency.value = 1300;
-    bus.connect(lp).connect(this.out);
+    bus.connect(lp).connect(this.events);
 
     let at = t;
     for (let i = 0; i < sobs; i++) {
@@ -392,7 +448,7 @@ export class Ambience {
 
       const g = this.ctx.createGain();
       g.gain.setValueAtTime(0, at);
-      g.gain.linearRampToValueAtTime(0.030, at + dur * 0.18);
+      g.gain.linearRampToValueAtTime(0.62, at + dur * 0.18);
       g.gain.exponentialRampToValueAtTime(0.0004, at + dur);
 
       const mix = this.ctx.createGain();
