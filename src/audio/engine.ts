@@ -224,13 +224,33 @@ export class AudioEngine {
     this.lastTaunt = line.text;
 
     const panner = this.makePanner(AUDIO.tauntRefDistance, AUDIO.tauntMaxDistance);
+    /*
+     * A gentler rolloff for the voice than for footsteps.
+     *
+     * The shared 1.6 rolloff is right for a footfall, which should vanish
+     * within a room or two, and quite wrong for a shout down a corridor: at
+     * fifteen metres it left the taunt barely audible, which is most of why
+     * the ghost seemed to be muttering. A voice carries.
+     */
+    panner.rolloffFactor = 0.9;
     this.positionPanner(panner, x, GHOST_MOUTH_HEIGHT, z);
+
+    /*
+     * Taunts get their own bus, well above the rest of the world.
+     *
+     * A line is the most important sound in the mix when it plays — it is
+     * often the only warning a survivor gets — and it was competing with the
+     * ambient bed on equal terms and losing.
+     */
+    const bus = this.ctx.createGain();
+    bus.gain.value = 3.4;
+    bus.connect(panner);
     panner.connect(this.world);
 
     // Closer means a heavier, rougher voice as well as a louder one.
     const intensity = 1 - Math.min(1, listenerDist / AUDIO.tauntMaxDistance);
-    const seconds = speakTaunt(this.ctx, panner, line, 0.45 + intensity * 0.5);
-    setTimeout(() => panner.disconnect(), (seconds + 1.5) * 1000);
+    const seconds = speakTaunt(this.ctx, bus, line, 0.45 + intensity * 0.5);
+    setTimeout(() => { bus.disconnect(); panner.disconnect(); }, (seconds + 2.5) * 1000);
 
     this.tauntFreeAt = now + seconds + 0.8;
     return line.text;

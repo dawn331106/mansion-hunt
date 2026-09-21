@@ -10,7 +10,8 @@
     "check": "tsc --noEmit",
     "balance": "tsx tools/balance.mjs",
     "controls": "tsx tools/controls.mjs",
-    "checkmap": "tsx tools/checkmap.mjs"
+    "checkmap": "tsx tools/checkmap.mjs",
+    "voicetest": "tsx tools/voicetest.mjs"
   },
   "dependencies": {
     "three": "^0.169.0"
