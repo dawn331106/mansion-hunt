@@ -68,8 +68,21 @@ export class InputController {
     document.addEventListener('pointerlockchange', this.onLockChange);
   }
 
+  /**
+   * Ask for the pointer.
+   *
+   * In browsers that return a promise this rejects when the call did not come
+   * from a user gesture — which is exactly what happens to a joining client,
+   * whose match starts on a network message rather than a click. The rejection
+   * is expected and harmless: the paused overlay is a click target that asks
+   * again from a real gesture. It only has to be caught, or it surfaces as an
+   * unhandled rejection in the console.
+   */
   requestLock(): void {
-    this.element.requestPointerLock();
+    const r = this.element.requestPointerLock() as unknown;
+    if (r && typeof (r as Promise<void>).catch === 'function') {
+      (r as Promise<void>).catch(() => {});
+    }
   }
 
   get isLocked(): boolean { return this.locked; }

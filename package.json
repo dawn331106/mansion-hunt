@@ -14,7 +14,8 @@
     "voicetest": "tsx tools/voicetest.mjs",
     "hidetest": "tsx tools/hidetest.mjs",
     "ambiencetest": "tsx tools/ambiencetest.mjs",
-    "mptest": "node tools/mptest.mjs"
+    "mptest": "node tools/mptest.mjs",
+    "e2e": "node tools/e2e-multiplayer.mjs"
   },
   "dependencies": {
     "peerjs": "^1.5.5",
@@ -22,6 +23,7 @@
   },
   "devDependencies": {
     "@types/three": "^0.169.0",
+    "playwright": "^1.63.0",
     "tsx": "^4.23.13",
     "typescript": "^5.6.3",
     "vite": "^5.4.10"

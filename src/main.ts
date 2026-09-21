@@ -388,6 +388,14 @@ async function start(
   audio.startAmbience();
 
   resize();
+  /*
+   * Ask for the pointer, and cope with being told no.
+   *
+   * For a client this call is not inside a user gesture, so it rejects. That
+   * is survivable — `pausedNote` is already a click target that asks again,
+   * and this time from a real gesture — but the rejection must be caught, or
+   * it surfaces as an unhandled promise error and the overlay never shows.
+   */
   input.requestLock();
 
   last = performance.now();
@@ -510,7 +518,18 @@ function frame(now: number): void {
     const period = 1 / INPUT_HZ;
     while (inputAccum >= period) {
       inputAccum -= period;
-      if (s.input.isLocked) client?.sendIntent(s.input.read());
+      /*
+       * Send regardless of pointer lock.
+       *
+       * A client's `start` runs from the host's network message, not from a
+       * click, so the browser refuses the pointer lock request that follows it
+       * — there is no user gesture to justify it. Gating input on the lock
+       * therefore left every joining player unable to move, while the host,
+       * whose start *is* a click, was fine. A client simulates nothing, so
+       * there is nothing to protect here: the keyboard works unlocked, and
+       * only the mouse look needs the lock.
+       */
+      client?.sendIntent(s.input.read());
     }
     const world = client?.interpolated();
     if (world) s.state = world;
@@ -907,6 +926,30 @@ function resize(): void {
     session.hud.resize(w, h, Math.min(window.devicePixelRatio, 2));
   }
 }
+
+/*
+ * A read-only window onto the session, for automated tests.
+ *
+ * End-to-end tests need to assert on what the simulation believes — that a
+ * joining survivor actually moved, say — and the alternative is scraping
+ * pixels, which is both slow and fragile. This exposes nothing that is not
+ * already on screen and takes no input, so it cannot change how the game
+ * plays.
+ */
+(window as unknown as Record<string, unknown>).__mh = {
+  get state() { return session?.state ?? null; },
+  get selfId() { return session?.selfId ?? null; },
+  get role() { return session?.role ?? null; },
+  get net() { return session?.net ?? null; },
+  get locked() { return session?.input.isLocked ?? false; },
+  self() {
+    if (!session) return null;
+    const st = session.state;
+    return session.selfId === 'ghost'
+      ? st.ghost
+      : st.survivors.find((v) => v.id === session!.selfId) ?? null;
+  },
+};
 
 window.addEventListener('resize', resize);
 

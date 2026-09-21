@@ -22,13 +22,27 @@ import * as THREE from 'three';
  */
 
 /**
+ * Resolve a file in `public/` against wherever the game is served from.
+ *
+ * A leading slash would point at the domain root, which is wrong on GitHub
+ * Pages: the site lives under `/<repo>/`, so `/assets/ghost.png` 404s and the
+ * ghost loses its face. Vite substitutes `BASE_URL` at build time with the
+ * `base` from the config, so this is correct from the root, from a
+ * subdirectory, and from a local dev server alike.
+ */
+function assetUrl(path: string): string {
+  const base = import.meta.env.BASE_URL || '/';
+  return base.endsWith('/') ? base + path : `${base}/${path}`;
+}
+
+/**
  * Path to the ghost artwork, served from `public/`.
  *
  * A transparent PNG of the face or upper body works best. The shader tints and
  * dissolves it, so a flat, evenly-lit source image is fine — no need to
  * pre-darken it.
  */
-export const GHOST_TEXTURE_URL: string | null = '/assets/ghost.png';
+export const GHOST_TEXTURE_URL: string | null = assetUrl('assets/ghost.png');
 
 /**
  * Path to the ghost's body artwork, served from `public/`.
@@ -36,7 +50,7 @@ export const GHOST_TEXTURE_URL: string | null = '/assets/ghost.png';
  * Generated from `body.png` by `tools/import-ghost.py`. Set to null to fall
  * back to the procedural form.
  */
-export const GHOST_BODY_URL: string | null = '/assets/ghost-body.png';
+export const GHOST_BODY_URL: string | null = assetUrl('assets/ghost-body.png');
 
 
 export interface GhostModel {
