@@ -18,6 +18,11 @@ import { buildWorld, type WorldView } from './world.js';
 
 const BASE_FOV = 78;
 
+/** How close a body must be for a door to swing open, in metres. */
+const DOOR_OPEN_RANGE = 2.4;
+/** How far a door swings, radians. */
+const DOOR_OPEN_ANGLE = 1.5;
+
 export class Renderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly camera: THREE.PerspectiveCamera;
@@ -53,7 +58,7 @@ export class Renderer {
     // A filmic curve keeps the highlights from blowing out in a scene this
     // dark, where a single point light is the brightest thing on screen.
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.5;
+    this.renderer.toneMappingExposure = 1.15;
 
     this.camera = new THREE.PerspectiveCamera(BASE_FOV, 1, 0.05, 90);
 
@@ -102,6 +107,7 @@ export class Renderer {
     // ghost is standing, and the actor pass needs that answer.
     this.placeCamera(state, role, viewerId, dt, time);
     this.syncActors(state, role, time);
+    this.syncDoors(state, dt);
     this.syncProps(state, time);
     this.syncPulse(state, role, time);
     this.renderer.render(this.world.scene, this.camera);
@@ -133,6 +139,45 @@ export class Renderer {
     // Playing as the ghost, your own body would fill the screen; hide it —
     // except during the scare, where it is the whole point.
     this.ghostModel.object.visible = role !== 'ghost' || this.scareGhost !== null;
+  }
+
+  /**
+   * Doors open for whoever is at them, and close behind.
+   *
+   * A door standing open is information — it says somebody came this way —
+   * so leaving them all ajar from the start throws that away, and a house of
+   * permanently open doorways is just a house with holes in it. Shut by
+   * default, a door swinging as you round a corner means something is there
+   * *now*, and one drifting closed across a corridor means something was.
+   *
+   * The leaf never collides, so this is purely what you see and hear; a door
+   * that could shut you in would make the ghost unbeatable.
+   */
+  private syncDoors(state: GameState, dt: number): void {
+    const bodies: { x: number; z: number }[] = [
+      { x: state.ghost.pos.x, z: state.ghost.pos.z },
+    ];
+    for (const s of state.survivors) {
+      if (s.alive && !s.escaped && !s.hidden) bodies.push({ x: s.pos.x, z: s.pos.z });
+    }
+
+    for (const d of this.mansion.doors) {
+      const pivot = this.world.roomDoors.get(d.id);
+      if (!pivot) continue;
+
+      // Open when anything is within reach of the opening.
+      let near = false;
+      for (const b of bodies) {
+        if (Math.hypot(b.x - d.x, b.z - d.z) < DOOR_OPEN_RANGE) { near = true; break; }
+      }
+
+      const base = d.axis === 'x' ? 0 : Math.PI / 2;
+      const want = base + (near ? d.swing * DOOR_OPEN_ANGLE : 0);
+      // Opening is quick and closing is slow, which is how a heavy door
+      // behaves and gives the swing-back time to be noticed.
+      const speed = near ? 7.0 : 2.2;
+      pivot.rotation.y += (want - pivot.rotation.y) * Math.min(1, dt * speed);
+    }
   }
 
   private syncProps(state: GameState, time: number): void {

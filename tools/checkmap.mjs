@@ -77,6 +77,27 @@ for (const h of m.hidingSpots) {
   }
 }
 
+/*
+ * No room may have more than two doors.
+ *
+ * A room with three ways out is a thoroughfare you pass through rather than a
+ * place you can be cornered, and a house made of those has no tension in it.
+ * The corridors carry the traffic instead. This is a design rule, so it is
+ * worth a test — it is the kind of thing that erodes one convenient doorway
+ * at a time.
+ */
+console.log('door counts');
+{
+  const byRoom = {};
+  for (const d of m.doors) (byRoom[d.room] ??= []).push(d.id);
+  for (const [room, ds] of Object.entries(byRoom)) {
+    if (ds.length > 2) {
+      bad++;
+      console.log(`  FAIL ${room} has ${ds.length} doors: ${ds.join(', ')}`);
+    }
+  }
+}
+
 const area = (m.bounds.maxX - m.bounds.minX) * (m.bounds.maxZ - m.bounds.minZ);
 console.log(`\n${m.solids.length} solids, ${m.doors.length} doors, ${m.hidingSpots.length} hiding spots`);
 console.log(`house ${m.bounds.maxX - m.bounds.minX}x${m.bounds.maxZ - m.bounds.minZ}m = ${area}m2`);

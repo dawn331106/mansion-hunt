@@ -16,22 +16,22 @@ import type { Mansion, Solid } from '../game/map.js';
 
 /** Per-room palette. Wall, floor, and the colour of that room's lamp. */
 const ROOM_STYLE: Record<string, { wall: number; floor: number; light: number; intensity: number }> = {
-  courtyard:       { wall: 0x6e6154, floor: 0x585044, light: 0x8fa4c8, intensity: 16 },
-  'corridor-s':    { wall: 0x6a5f52, floor: 0x554c42, light: 0xd8a870, intensity: 14 },
-  'corridor-n':    { wall: 0x655a60, floor: 0x50474e, light: 0xb49ad0, intensity: 14 },
-  'corridor-w':    { wall: 0x5e626c, floor: 0x4a4e58, light: 0x92a8cc, intensity: 14 },
-  'corridor-e':    { wall: 0x6e6050, floor: 0x574c40, light: 0xe0a060, intensity: 14 },
-  verandah:        { wall: 0x7a6552, floor: 0x655546, light: 0xffb066, intensity: 26 },
-  kitchen:         { wall: 0x6e5843, floor: 0x58493a, light: 0xff9a4a, intensity: 32 },
-  pantry:          { wall: 0x5c5346, floor: 0x4a423a, light: 0xa8946c, intensity: 14 },
-  dining:          { wall: 0x6b5a4e, floor: 0x554940, light: 0xffa860, intensity: 24 },
-  puja:            { wall: 0x82564c, floor: 0x63463c, light: 0xff7a48, intensity: 30 },
-  library:         { wall: 0x5a5648, floor: 0x49463c, light: 0xc0a878, intensity: 18 },
-  'bedroom-south': { wall: 0x5a5e68, floor: 0x4a4d56, light: 0x8fa4c4, intensity: 22 },
-  'bedroom-north': { wall: 0x635a6a, floor: 0x4e4856, light: 0xae8ec4, intensity: 22 },
+  courtyard:       { wall: 0x4f453c, floor: 0x3f3930, light: 0x8fa4c8, intensity: 13 },
+  'corridor-s':    { wall: 0x4c443b, floor: 0x3d362f, light: 0xd8a870, intensity: 12 },
+  'corridor-n':    { wall: 0x484045, floor: 0x393338, light: 0xb49ad0, intensity: 12 },
+  'corridor-w':    { wall: 0x43464d, floor: 0x35383f, light: 0x92a8cc, intensity: 12 },
+  'corridor-e':    { wall: 0x4f4539, floor: 0x3e362e, light: 0xe0a060, intensity: 12 },
+  verandah:        { wall: 0x57483b, floor: 0x483d32, light: 0xffb066, intensity: 20 },
+  kitchen:         { wall: 0x4f3f30, floor: 0x3f3429, light: 0xff9a4a, intensity: 26 },
+  pantry:          { wall: 0x423b32, floor: 0x352f29, light: 0xa8946c, intensity: 12 },
+  dining:          { wall: 0x4d4038, floor: 0x3d342e, light: 0xffa860, intensity: 19 },
+  puja:            { wall: 0x5d3d36, floor: 0x47322b, light: 0xff7a48, intensity: 23 },
+  library:         { wall: 0x403d33, floor: 0x34322b, light: 0xc0a878, intensity: 14 },
+  'bedroom-south': { wall: 0x40434a, floor: 0x35373d, light: 0x8fa4c4, intensity: 17 },
+  'bedroom-north': { wall: 0x47404c, floor: 0x38333d, light: 0xae8ec4, intensity: 17 },
 };
 
-const DEFAULT_STYLE = { wall: 0x615b52, floor: 0x4c4741, light: 0xb0a090, intensity: 18 };
+const DEFAULT_STYLE = { wall: 0x45413b, floor: 0x36332e, light: 0xb0a090, intensity: 14 };
 
 function styleFor(room: string | undefined) {
   return (room && ROOM_STYLE[room]) || DEFAULT_STYLE;
@@ -55,8 +55,8 @@ export function buildWorld(mansion: Mansion): WorldView {
 
   // A deep, cold fog. It hides the far walls, which both sells the dark and
   // keeps the draw distance honest.
-  scene.fog = new THREE.FogExp2(0x0a0c14, 0.030);
-  scene.background = new THREE.Color(0x090b12);
+  scene.fog = new THREE.FogExp2(0x06070d, 0.040);
+  scene.background = new THREE.Color(0x05060b);
 
   const disposables: { dispose(): void }[] = [];
   const track = <T extends { dispose(): void }>(o: T): T => { disposables.push(o); return o; };
@@ -138,18 +138,35 @@ export function buildWorld(mansion: Mansion): WorldView {
   }
 
   // --- Lighting. ---
-  // Low ambient: enough to read a doorway and not walk into walls, never
-  // enough to feel safe. Below roughly this level the house stops being
-  // frightening and simply becomes an unplayable black screen.
-  scene.add(new THREE.AmbientLight(0x2a3548, 1.5));
+  /*
+   * Low ambient: enough to read a doorway and not walk into walls, never
+   * enough to feel safe.
+   *
+   * This was roughly twice as bright, which made the house legible but not
+   * frightening — you could see the far side of a room from its doorway and
+   * there was nowhere the dark was doing any work. Halved, with the lamps
+   * dimmed to match, so a room is a pool of light with black between the
+   * pools. There is a floor below which it stops being atmosphere and starts
+   * being an unplayable black screen; this sits just above it.
+   */
+  scene.add(new THREE.AmbientLight(0x1b2432, 1.0));
 
   // A cold hemisphere fill, so floors and ceilings separate instead of
   // merging into one void. This is what makes the dark legible.
-  scene.add(new THREE.HemisphereLight(0x5a6a88, 0x201c18, 0.9));
+  scene.add(new THREE.HemisphereLight(0x3c4860, 0x14120f, 0.45));
 
   // Moonlight into the open courtyard. The one genuinely bright place, which
   // makes crossing it a decision rather than a default.
-  const moon = new THREE.DirectionalLight(0xa8c0e8, 2.6);
+    /*
+   * Moonlight into the open courtyard.
+   *
+   * Cut along with everything else in the darkening pass, which was a mistake:
+   * the courtyard is meant to be the one bright place in the house, and with
+   * it as dim as the rooms there was nowhere the light was doing any work
+   * either. The interiors stay dark; this is the contrast they are dark
+   * against, and it is what makes crossing the open a decision.
+   */
+  const moon = new THREE.DirectionalLight(0x9db6e0, 2.4);
   moon.position.set(6, 18, -4);
   moon.target.position.set(0, 0, 0);
   moon.castShadow = true;
@@ -237,8 +254,8 @@ export function buildWorld(mansion: Mansion): WorldView {
     // Hinge on one side of the opening.
     pivot.position.x += d.axis === 'x' ? -d.half : 0;
     pivot.position.z += d.axis === 'z' ? -d.half : 0;
-    // Start ajar, which reads as a lived-in house rather than a sealed one.
-    pivot.rotation.y += d.swing * (0.35 + Math.random() * 0.5);
+    // Doors start shut. They open as someone reaches them and swing back
+    // behind — see `syncDoors` in the renderer.
     scene.add(pivot);
     roomDoors.set(d.id, pivot);
   }

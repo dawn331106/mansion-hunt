@@ -201,6 +201,15 @@ export class Ambience {
     const t = this.ctx.currentTime;
     const kind = Math.random();
 
+    /*
+     * The rarer, louder events come first and are checked against a small
+     * slice of the range, so a howl or a cry is an occasional shock rather
+     * than furniture. The creaks and knocks below are the common case.
+     */
+    if (kind < 0.10) { this.howl(t); return; }
+    if (kind < 0.19) { this.hounds(t); return; }
+    if (kind < 0.27) { this.crying(t); return; }
+
     if (kind < 0.4) {
       // A creak: a filtered sweep, like weight shifting on old timber.
       const o = this.ctx.createOscillator();
@@ -250,6 +259,153 @@ export class Ambience {
       src.connect(hp).connect(g).connect(this.out);
       src.start(t);
     }
+  }
+
+  /**
+   * A wolf, a long way off.
+   *
+   * A slow upward glide into a held note, then a long fall — the shape of a
+   * howl is almost entirely in that rise and the sustain at the top. Two
+   * voices slightly apart make it read as distance rather than as a
+   * synthesiser, because a single clean tone sounds electronic however it
+   * is shaped.
+   */
+  private howl(t: number): void {
+    const dur = 2.6 + Math.random() * 1.2;
+    const base = 220 + Math.random() * 90;
+
+    for (const [mult, level, delay] of [[1, 0.055, 0], [1.006, 0.04, 0.14]] as const) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sawtooth';
+      const at = t + delay;
+      o.frequency.setValueAtTime(base * 0.55 * mult, at);
+      o.frequency.exponentialRampToValueAtTime(base * mult, at + dur * 0.28);
+      o.frequency.setValueAtTime(base * mult, at + dur * 0.55);
+      o.frequency.exponentialRampToValueAtTime(base * 0.42 * mult, at + dur);
+
+      // A formant filter turns the saw into something with a throat.
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 780;
+      bp.Q.value = 4.5;
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      // Heavily rolled off, which is what distance does to a sound.
+      lp.frequency.value = 1500;
+
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0, at);
+      g.gain.linearRampToValueAtTime(level, at + dur * 0.22);
+      g.gain.setValueAtTime(level, at + dur * 0.6);
+      g.gain.exponentialRampToValueAtTime(0.0004, at + dur);
+
+      o.connect(bp).connect(lp).connect(g).connect(this.out);
+      o.start(at);
+      o.stop(at + dur + 0.2);
+    }
+  }
+
+  /**
+   * Dogs, somewhere outside the compound.
+   *
+   * Street dogs setting each other off is one of the most characteristic
+   * night sounds of the setting, and it does something specific here: it
+   * tells you there is a world beyond these walls that you are cut off from.
+   * Barks are short filtered bursts at irregular intervals, because a regular
+   * rhythm reads as a machine.
+   */
+  private hounds(t: number): void {
+    const barks = 3 + Math.floor(Math.random() * 5);
+    let at = t;
+    for (let i = 0; i < barks; i++) {
+      const dur = 0.11 + Math.random() * 0.06;
+      const f0 = 300 + Math.random() * 180;
+
+      const o = this.ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(f0 * 1.5, at);
+      o.frequency.exponentialRampToValueAtTime(f0 * 0.7, at + dur);
+
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 900 + Math.random() * 400;
+      bp.Q.value = 2.2;
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 2200;
+
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0, at);
+      g.gain.linearRampToValueAtTime(0.045, at + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0004, at + dur);
+
+      o.connect(bp).connect(lp).connect(g).connect(this.out);
+      o.start(at);
+      o.stop(at + dur + 0.05);
+
+      // Uneven spacing, with the odd flurry.
+      at += dur + 0.09 + Math.random() * 0.34;
+    }
+  }
+
+  /**
+   * A child crying, far off and indistinct.
+   *
+   * The most unpleasant sound in here, and the one that does the most work.
+   * It is built as a voice — a buzz through formants — rather than as a tone,
+   * with a sobbing amplitude that catches and restarts. Kept quiet and
+   * heavily filtered so it is never quite clear enough to locate, which is
+   * the point: you are never sure whether you heard it.
+   */
+  private crying(t: number): void {
+    const sobs = 4 + Math.floor(Math.random() * 4);
+    const base = 300 + Math.random() * 80;
+
+    const bus = this.ctx.createGain();
+    bus.gain.value = 1;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 1300;
+    bus.connect(lp).connect(this.out);
+
+    let at = t;
+    for (let i = 0; i < sobs; i++) {
+      const dur = 0.34 + Math.random() * 0.22;
+      const f = base * (1 - i * 0.045);
+
+      const o = this.ctx.createOscillator();
+      o.type = 'sawtooth';
+      // Each sob rises then breaks downward.
+      o.frequency.setValueAtTime(f * 0.85, at);
+      o.frequency.exponentialRampToValueAtTime(f * 1.18, at + dur * 0.3);
+      o.frequency.exponentialRampToValueAtTime(f * 0.7, at + dur);
+
+      // Two formants near a crying vowel.
+      const f1 = this.ctx.createBiquadFilter();
+      f1.type = 'bandpass';
+      f1.frequency.value = 640;
+      f1.Q.value = 7;
+      const f2 = this.ctx.createBiquadFilter();
+      f2.type = 'bandpass';
+      f2.frequency.value = 1180;
+      f2.Q.value = 8;
+
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0, at);
+      g.gain.linearRampToValueAtTime(0.030, at + dur * 0.18);
+      g.gain.exponentialRampToValueAtTime(0.0004, at + dur);
+
+      const mix = this.ctx.createGain();
+      o.connect(f1).connect(mix);
+      o.connect(f2).connect(mix);
+      mix.connect(g).connect(bus);
+      o.start(at);
+      o.stop(at + dur + 0.1);
+
+      // The catch between sobs is what makes it read as crying.
+      at += dur + 0.10 + Math.random() * 0.14;
+    }
+    setTimeout(() => { bus.disconnect(); lp.disconnect(); }, (at - t + 2) * 1000);
   }
 
   /**
