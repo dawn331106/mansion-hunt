@@ -35,10 +35,7 @@ export class InputController {
 
   private readonly onMouseMove = (e: MouseEvent) => {
     if (!this.locked) return;
-    // The sim's yaw is a bearing in the XZ plane, and increasing it rotates
-    // counter-clockwise seen from above — so moving the mouse right has to
-    // decrease it. With `+=` the view swung left when you pushed right.
-    this.yaw -= e.movementX * MOUSE_SENSITIVITY;
+    this.yaw += e.movementX * MOUSE_SENSITIVITY;
     // Screen-down should look down, hence the sign.
     this.pitch = clamp(this.pitch - e.movementY * MOUSE_SENSITIVITY, -PITCH_LIMIT, PITCH_LIMIT);
   };

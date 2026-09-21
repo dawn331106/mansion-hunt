@@ -189,6 +189,17 @@ function frame(now: number): void {
     self: s.state.survivors.find((x) => x.id === s.selfId) ?? null,
     ghost: { x: s.state.ghost.pos.x, z: s.state.ghost.pos.z },
     camera: s.renderer.camera.position.toArray(),
+    /**
+     * Where a fixed world point lands on screen, in normalised device
+     * coordinates (-1 = left edge, +1 = right edge).
+     *
+     * This is what `tools/controls.mjs` measures. Checking yaw numbers or
+     * camera vectors is what let the mouse and strafe controls invert each
+     * other repeatedly; the only question that matters is which way the
+     * picture moves, and this answers it directly rather than by trying to
+     * track features through a very dark image.
+     */
+    probe: s.renderer.projectProbe(),
   };
 
   const self = s.state.survivors.find((x) => x.id === s.selfId) ?? null;

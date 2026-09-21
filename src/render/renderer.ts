@@ -73,6 +73,17 @@ export class Renderer {
     }
   }
 
+  /**
+   * Project a fixed world point to normalised device coordinates.
+   *
+   * Used only by the control test. The point is the centre of the house, far
+   * enough away that turning the camera sweeps it clearly across the frame.
+   */
+  projectProbe(): { x: number; y: number } {
+    const v = new THREE.Vector3(0, 1.5, 0).project(this.camera);
+    return { x: v.x, y: v.y };
+  }
+
   resize(width: number, height: number): void {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;

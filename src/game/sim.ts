@@ -391,17 +391,18 @@ function applyMove(
   if (mag > 1) { fx /= mag; rx /= mag; }
 
   /**
-   * Forward is `(cos yaw, sin yaw)`; screen-right is that rotated clockwise,
-   * which in this coordinate frame is `(sin yaw, -cos yaw)`.
+   * Forward is `(cos yaw, sin yaw)`; screen-right is that rotated so that D
+   * moves toward the right of the picture.
    *
-   * The sign on the strafe term was the other way round, so D slid you left
-   * and A slid you right. It went unnoticed because the camera's convention
-   * was itself reversed at the time it was written, and the two errors
-   * cancelled on screen.
+   * The sign of this term is tied to the direction the mouse turns the yaw,
+   * so the two cannot be reasoned about separately — changing one silently
+   * inverts the other, which is how this pair went back and forth several
+   * times. Both are now pinned by `tools/controls.mjs`, which measures which
+   * way the rendered image actually moves rather than checking a number.
    */
   const cos = Math.cos(yaw), sin = Math.sin(yaw);
-  const dx = (cos * fx + sin * rx) * speed * dt;
-  const dz = (sin * fx - cos * rx) * speed * dt;
+  const dx = (cos * fx - sin * rx) * speed * dt;
+  const dz = (sin * fx + cos * rx) * speed * dt;
 
   const before = { x: pos.x, z: pos.z };
   const next = moveWithCollision(mansion, pos.x, pos.z, dx, dz, radius, eyeHeight);
