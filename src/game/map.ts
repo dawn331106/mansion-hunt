@@ -10,6 +10,12 @@
  * carries a distinct wall tint and prop silhouette (see `render/world.ts`) —
  * that palette is the only wayfinding the game offers, and it has to do the
  * whole job.
+ *
+ * The plan is 56x44m around an open central courtyard, with a corridor ring
+ * between the courtyard and the rooms. An earlier 36x30 version was too small
+ * to hide in: from most of it you could see most of the rest, the ghost
+ * crossed the whole house in a few seconds, and a chase had nowhere to go.
+ * Distance is what makes hiding mean anything.
  */
 
 export interface Box {
@@ -35,6 +41,30 @@ export interface Solid extends Box {
   crouchUnder: boolean;
   /** Which room this belongs to, so the renderer can tint it. */
   room?: string;
+}
+
+/**
+ * A doorway in a wall.
+ *
+ * Doors are openings with a hinged leaf rather than plain gaps. They matter
+ * for more than looks: a door swings visibly when someone passes, and one
+ * creaking open somewhere in the house is information you can act on. The leaf
+ * itself never blocks movement — a door that could trap you would make the
+ * ghost unbeatable — so collision sees only the two jambs either side.
+ */
+export interface Door {
+  id: string;
+  /** Centre of the opening. */
+  x: number;
+  z: number;
+  /** Which way the wall runs: 'x' for an east-west wall, 'z' for north-south. */
+  axis: 'x' | 'z';
+  /** Half-width of the opening. */
+  half: number;
+  /** Which side the leaf swings toward, +1 or -1 along the other axis. */
+  swing: number;
+  /** The room this door leads into, for tinting. */
+  room: string;
 }
 
 export type HidingKind = 'almirah' | 'under';
@@ -71,6 +101,7 @@ export interface Mansion {
   /** Outer bounds, for clamping. */
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
   solids: Solid[];
+  doors: Door[];
   hidingSpots: HidingSpot[];
   rooms: Room[];
   /** Candidate key positions; one is chosen at random per match. */
@@ -90,8 +121,10 @@ export interface Mansion {
   courtyard: { minX: number; maxX: number; minZ: number; maxZ: number };
 }
 
-const WALL_H = 3.0;
-const T = 0.15; // wall half-thickness
+const WALL_H = 3.2;
+const T = 0.16; // wall half-thickness
+/** Half-width of a standard doorway. Wide enough to run through. */
+const DOOR_HALF = 0.9;
 
 function wall(x: number, z: number, hx: number, hz: number, room?: string): Solid {
   return { kind: 'wall', x, z, hx, hz, y0: 0, y1: WALL_H, crouchUnder: false, room };
@@ -115,123 +148,253 @@ function lowFurn(
 }
 
 /**
- * Build the house.
+ * A wall with one or more doorways cut into it.
  *
- * The plan is a 36x30m compound laid out around a central open courtyard —
- * the uthon — with rooms opening onto it on all four sides, which is how these
- * houses are actually built and which gives the hunt a ring topology: every
- * room has two ways out, so no corridor is a guaranteed kill box, and a chase
- * can loop the courtyard indefinitely until someone's stamina runs out.
+ * Pushes the jamb segments into `solids` and records each opening in `doors`,
+ * so the renderer knows where to hang a leaf. Building walls this way rather
+ * than hand-placing every segment is what keeps a house this size possible to
+ * read and to change without leaving someone sealed in a room.
  *
- * Rooms, clockwise from the main gate (south): verandah, kitchen (east),
- * store room, puja room (north), bedrooms (west), and a well in the courtyard.
+ * It takes a *list* of doorways rather than one. Calling it twice for the same
+ * wall pushes two complete copies of that wall, each with only its own gap, so
+ * each copy plugs the other's doorway — the wall ends up solid and the room
+ * behind it is sealed. Cutting every opening in a single pass is the only way
+ * the arithmetic works.
  */
+function wallWithDoors(
+  solids: Solid[], doors: Door[],
+  opts: {
+    id: string;
+    axis: 'x' | 'z';
+    /** Fixed coordinate of the wall: z for an 'x' wall, x for a 'z' wall. */
+    at: number;
+    /** Span along the wall's axis. */
+    from: number;
+    to: number;
+    /** Positions of the doorways along that axis. */
+    doorsAt: number[];
+    swing?: number;
+    room?: string;
+    half?: number;
+  },
+): void {
+  const half = opts.half ?? DOOR_HALF;
+  const a0 = Math.min(opts.from, opts.to);
+  const a1 = Math.max(opts.from, opts.to);
+
+  const push = (s: number, e: number) => {
+    if (e - s < 0.05) return;
+    const mid = (s + e) / 2;
+    const halfLen = (e - s) / 2;
+    if (opts.axis === 'x') solids.push(wall(mid, opts.at, halfLen, T, opts.room));
+    else solids.push(wall(opts.at, mid, T, halfLen, opts.room));
+  };
+
+  // Walk the wall left to right, emitting the solid stretches between gaps.
+  const gaps = opts.doorsAt
+    .filter((d) => d - half > a0 - 0.01 && d + half < a1 + 0.01)
+    .sort((p, q) => p - q);
+
+  let cursor = a0;
+  for (let i = 0; i < gaps.length; i++) {
+    push(cursor, gaps[i] - half);
+    cursor = gaps[i] + half;
+    doors.push({
+      id: gaps.length > 1 ? `${opts.id}-${i}` : opts.id,
+      x: opts.axis === 'x' ? gaps[i] : opts.at,
+      z: opts.axis === 'x' ? opts.at : gaps[i],
+      axis: opts.axis,
+      half,
+      swing: opts.swing ?? 1,
+      room: opts.room ?? 'corridor',
+    });
+  }
+  push(cursor, a1);
+}
+
 export function buildMansion(): Mansion {
   const solids: Solid[] = [];
-  const minX = -18, maxX = 18, minZ = -15, maxZ = 15;
+  const doors: Door[] = [];
+  const minX = -28, maxX = 28, minZ = -22, maxZ = 22;
 
-  // --- Outer shell. The main gate is a 2.4m gap at x = 0 in the south wall. ---
-  solids.push(wall(-10.2, minZ, 7.8, T));
-  solids.push(wall(10.2, minZ, 7.8, T));
-  solids.push(wall(0, maxZ, 18, T));
-  solids.push(wall(minX, 0, T, 15));
-  solids.push(wall(maxX, 0, T, 15));
+  // --- Outer shell. The main gate is a gap at x = 0 in the south wall. ---
+  solids.push(wall(-15.8, minZ, 12.2, T));
+  solids.push(wall(15.8, minZ, 12.2, T));
+  solids.push(wall(0, maxZ, 28, T));
+  solids.push(wall(minX, 0, T, 22));
+  solids.push(wall(maxX, 0, T, 22));
 
-  // --- The courtyard: open to the sky, 16x12, centred. Rooms ring it. ---
-  const courtyard = { minX: -8, maxX: 8, minZ: -6, maxZ: 6 };
+  // --- The courtyard: open to the sky, 20x14, centred. ---
+  const courtyard = { minX: -10, maxX: 10, minZ: -7, maxZ: 7 };
 
-  // Inner courtyard walls, each pierced by a doorway onto the verandah ring.
-  // South side of the courtyard, doorway at x = 0.
-  solids.push(wall(-5.2, -6, 2.8, T, 'verandah'));
-  solids.push(wall(5.2, -6, 2.8, T, 'verandah'));
-  // North side, doorway at x = 0.
-  solids.push(wall(-5.2, 6, 2.8, T, 'puja'));
-  solids.push(wall(5.2, 6, 2.8, T, 'puja'));
-  // West side, doorway at z = 0.
-  solids.push(wall(-8, -3.7, T, 2.3, 'bedroom-south'));
-  solids.push(wall(-8, 3.7, T, 2.3, 'bedroom-north'));
-  // East side, doorway at z = 0.
-  solids.push(wall(8, -3.7, T, 2.3, 'kitchen'));
-  solids.push(wall(8, 3.7, T, 2.3, 'store'));
+  // Courtyard walls. Two doorways on each side, so the courtyard is never a
+  // trap with a single way out and a chase through it always has an option.
+  wallWithDoors(solids, doors, { id: 'court-s', axis: 'x', at: -7, from: -10, to: 10, doorsAt: [-5, 5], room: 'courtyard' });
+  wallWithDoors(solids, doors, { id: 'court-n', axis: 'x', at: 7, from: -10, to: 10, doorsAt: [-5, 5], room: 'courtyard' });
+  wallWithDoors(solids, doors, { id: 'court-w', axis: 'z', at: -10, from: -7, to: 7, doorsAt: [0], room: 'courtyard' });
+  wallWithDoors(solids, doors, { id: 'court-e', axis: 'z', at: 10, from: -7, to: 7, doorsAt: [0], room: 'courtyard' });
 
-  // --- East wing divider: kitchen (south) / store room (north). ---
-  solids.push(wall(13.0, 0, 5.0, T, 'kitchen'));
-  // --- West wing divider: two bedrooms. ---
-  solids.push(wall(-13.0, 0, 5.0, T, 'bedroom-south'));
+  // --- The corridor ring runs between the courtyard walls and the rooms, so
+  //     the house has circulation and a chase can loop indefinitely. ---
+  const SOUTH = -13.0;   // wall between south corridor and verandah
+  const NORTH = 13.0;    // wall between north corridor and puja/library
+  const WEST = -16.0;    // wall between west corridor and bedrooms
+  const EAST = 16.0;     // wall between east corridor and kitchen/dining
 
-  // --- Verandah (south strip) and puja room (north strip) end walls. ---
-  solids.push(wall(-8, -10.5, T, 4.5, 'verandah'));
-  solids.push(wall(8, -10.5, T, 4.5, 'verandah'));
-  solids.push(wall(-8, 10.5, T, 4.5, 'puja'));
-  solids.push(wall(8, 10.5, T, 4.5, 'puja'));
+  /*
+   * Each range wall gets several doorways in a single call: one near the
+   * middle of the house and one out toward each corner. Every outer room
+   * therefore has at least two ways in, which is what stops a room being a
+   * dead end you get cornered in and keeps the whole house circulable.
+   */
 
-  // --- Courtyard: the well, a solid waist-high ring, and a tulsi plinth. ---
-  solids.push(furn(0, 0, 1.0, 1.0, 0.95, 'courtyard'));
-  solids.push(furn(-5.0, 4.0, 0.5, 0.5, 0.8, 'courtyard'));
+  // South range: the verandah, with the main gate beyond it. The wide central
+  // opening gives a clear run at the gate for whoever is carrying the key.
+  wallWithDoors(solids, doors, {
+    id: 'ver', axis: 'x', at: SOUTH, from: -28, to: 28,
+    doorsAt: [-21, -9, 9, 21], room: 'verandah',
+  });
+  wallWithDoors(solids, doors, {
+    id: 'ver-c', axis: 'x', at: SOUTH, from: -2.4, to: 2.4,
+    doorsAt: [0], half: 1.6, room: 'verandah',
+  });
 
-  // --- Verandah: wooden pillars and a long bench you can crawl under. ---
-  solids.push(furn(-4.0, -10.5, 0.25, 0.25, WALL_H, 'verandah'));
-  solids.push(furn(4.0, -10.5, 0.25, 0.25, WALL_H, 'verandah'));
-  solids.push(lowFurn(-6.0, -13.2, 1.6, 0.5, 0.45, 0.55, 'verandah'));
+  // North range: puja room (west) and library (east), split by a spine wall.
+  wallWithDoors(solids, doors, {
+    id: 'puja', axis: 'x', at: NORTH, from: -28, to: -0.5,
+    doorsAt: [-21, -9], room: 'puja',
+  });
+  wallWithDoors(solids, doors, {
+    id: 'lib', axis: 'x', at: NORTH, from: 0.5, to: 28,
+    doorsAt: [9, 21], room: 'library',
+  });
+  wallWithDoors(solids, doors, {
+    id: 'puja-lib', axis: 'z', at: 0, from: NORTH, to: 22,
+    doorsAt: [17.5], room: 'library',
+  });
 
-  // --- Kitchen: clay stove, a low prep table, shelving along the east wall. ---
-  solids.push(furn(15.0, -9.0, 1.0, 1.4, 0.85, 'kitchen'));
-  solids.push(lowFurn(11.5, -8.0, 1.3, 0.7, 0.68, 0.78, 'kitchen'));
-  solids.push(furn(17.2, -4.0, 0.6, 2.0, 2.1, 'kitchen'));
+  // West range: two bedrooms, joined to each other as well as to the corridor.
+  wallWithDoors(solids, doors, {
+    id: 'bedS', axis: 'z', at: WEST, from: -22, to: -0.5,
+    doorsAt: [-18, -6], room: 'bedroom-south',
+  });
+  wallWithDoors(solids, doors, {
+    id: 'bedN', axis: 'z', at: WEST, from: 0.5, to: 22,
+    doorsAt: [6, 18], room: 'bedroom-north',
+  });
+  wallWithDoors(solids, doors, {
+    id: 'bed-bed', axis: 'x', at: 0, from: -28, to: WEST,
+    doorsAt: [-22], room: 'bedroom-north',
+  });
 
-  // --- Store room: stacked crates and sacks, a maze of solid blocks. ---
-  solids.push(furn(11.5, 4.5, 1.1, 1.1, 1.6, 'store'));
-  solids.push(furn(15.5, 7.5, 1.3, 0.9, 1.9, 'store'));
-  solids.push(furn(12.0, 11.0, 0.9, 1.4, 1.4, 'store'));
+  // East range: kitchen (south) and dining (north), plus a pantry closet.
+  wallWithDoors(solids, doors, {
+    id: 'kit', axis: 'z', at: EAST, from: -22, to: -0.5,
+    doorsAt: [-18, -6], room: 'kitchen',
+  });
+  wallWithDoors(solids, doors, {
+    id: 'din', axis: 'z', at: EAST, from: 0.5, to: 22,
+    doorsAt: [6, 18], room: 'dining',
+  });
+  wallWithDoors(solids, doors, {
+    id: 'kit-din', axis: 'x', at: 0, from: EAST, to: 28,
+    doorsAt: [22], room: 'dining',
+  });
+  // The pantry is a closet off the kitchen's south end.
+  wallWithDoors(solids, doors, {
+    id: 'pan', axis: 'x', at: -17.5, from: EAST, to: 28,
+    doorsAt: [19.5], room: 'pantry',
+  });
 
-  // --- Puja room: a raised altar platform, low enough to hide behind. ---
-  solids.push(furn(0, 12.6, 2.2, 0.8, 1.1, 'puja'));
-  solids.push(furn(-4.5, 11.0, 0.4, 0.4, 2.2, 'puja'));
-  solids.push(furn(4.5, 11.0, 0.4, 0.4, 2.2, 'puja'));
+  // --- Courtyard furniture: the well and two tulsi plinths. ---
+  solids.push(furn(0, 0, 1.3, 1.3, 1.0, 'courtyard'));
+  solids.push(furn(-7.0, 4.8, 0.55, 0.55, 0.85, 'courtyard'));
+  solids.push(furn(7.0, -4.8, 0.55, 0.55, 0.85, 'courtyard'));
 
-  // --- Bedrooms: charpoys (rope cots) you can roll under, and a trunk. ---
-  solids.push(lowFurn(-14.5, -8.5, 1.0, 1.9, 0.52, 0.62, 'bedroom-south'));
-  solids.push(furn(-10.5, -12.0, 0.8, 0.6, 0.9, 'bedroom-south'));
-  solids.push(lowFurn(-14.5, 8.5, 1.0, 1.9, 0.52, 0.62, 'bedroom-north'));
-  solids.push(furn(-10.5, 12.0, 0.8, 0.6, 0.9, 'bedroom-north'));
+  // --- Verandah: pillars and benches to crawl under. ---
+  for (const px of [-14, -6, 6, 14]) {
+    solids.push(furn(px, -17.5, 0.28, 0.28, WALL_H, 'verandah'));
+  }
+  solids.push(lowFurn(-10, -20.5, 2.4, 0.55, 0.48, 0.58, 'verandah'));
+  solids.push(lowFurn(10, -20.5, 2.4, 0.55, 0.48, 0.58, 'verandah'));
 
-  // --- Hiding spots ---
-  // Almirahs (wooden wardrobes) face out of the wall they stand against; the
-  // occupant is locked to that facing with a narrow view, which is what makes
-  // climbing into one a gamble rather than a free save.
+  // --- Kitchen: clay stove, prep table, shelving. ---
+  solids.push(furn(24.5, -17, 1.3, 1.7, 0.92, 'kitchen'));
+  solids.push(lowFurn(20, -14, 1.6, 0.85, 0.70, 0.80, 'kitchen'));
+  solids.push(furn(26.6, -8, 0.7, 2.6, 2.2, 'kitchen'));
+
+  // --- Pantry: a narrow closet of shelves. ---
+  solids.push(furn(22, -19.5, 2.4, 0.7, 2.0, 'pantry'));
+
+  // --- Dining: a long table and a sideboard. ---
+  solids.push(lowFurn(21, 15, 3.2, 1.2, 0.76, 0.86, 'dining'));
+  solids.push(furn(26.4, 8, 0.7, 2.2, 1.6, 'dining'));
+
+  // --- Puja room: altar and columns. ---
+  solids.push(furn(-9, 20.0, 2.8, 0.9, 1.2, 'puja'));
+  solids.push(furn(-16, 16, 0.45, 0.45, 2.4, 'puja'));
+  solids.push(furn(-5, 16, 0.45, 0.45, 2.4, 'puja'));
+
+  // --- Library: shelf runs, the most maze-like room in the house. ---
+  solids.push(furn(6, 18, 0.7, 3.4, 2.4, 'library'));
+  solids.push(furn(12, 18, 0.7, 3.4, 2.4, 'library'));
+  solids.push(furn(18, 20, 2.4, 0.7, 2.4, 'library'));
+  solids.push(lowFurn(16, 15, 2.0, 0.9, 0.72, 0.82, 'library'));
+
+  // --- Bedrooms: charpoys and trunks. ---
+  solids.push(lowFurn(-22, -16, 1.15, 2.2, 0.54, 0.64, 'bedroom-south'));
+  solids.push(furn(-26, -20, 0.9, 0.7, 0.95, 'bedroom-south'));
+  solids.push(lowFurn(-22, 16, 1.15, 2.2, 0.54, 0.64, 'bedroom-north'));
+  solids.push(furn(-26, 20, 0.9, 0.7, 0.95, 'bedroom-north'));
+
+  // --- Hiding spots, spread so every room is worth entering. ---
   const hidingSpots: HidingSpot[] = [
-    { id: 'almirah-bed-s', kind: 'almirah', x: -16.8, z: -12.0, eyeHeight: 1.5, facing: 0, viewHalfAngle: 0.5, room: 'bedroom-south' },
-    { id: 'almirah-bed-n', kind: 'almirah', x: -16.8, z: 12.0, eyeHeight: 1.5, facing: 0, viewHalfAngle: 0.5, room: 'bedroom-north' },
-    { id: 'almirah-store', kind: 'almirah', x: 16.8, z: 11.5, eyeHeight: 1.5, facing: Math.PI, viewHalfAngle: 0.5, room: 'store' },
-    { id: 'almirah-kitchen', kind: 'almirah', x: 10.2, z: -12.8, eyeHeight: 1.5, facing: Math.PI / 2, viewHalfAngle: 0.5, room: 'kitchen' },
-    { id: 'almirah-puja', kind: 'almirah', x: -6.5, z: 13.8, eyeHeight: 1.5, facing: -Math.PI / 2, viewHalfAngle: 0.5, room: 'puja' },
-    { id: 'almirah-verandah', kind: 'almirah', x: 6.8, z: -13.8, eyeHeight: 1.5, facing: Math.PI / 2, viewHalfAngle: 0.5, room: 'verandah' },
+    { id: 'almirah-bed-s', kind: 'almirah', x: -26.4, z: -12.0, eyeHeight: 1.5, facing: 0, viewHalfAngle: 0.5, room: 'bedroom-south' },
+    { id: 'almirah-bed-n', kind: 'almirah', x: -26.4, z: 12.0, eyeHeight: 1.5, facing: 0, viewHalfAngle: 0.5, room: 'bedroom-north' },
+    { id: 'almirah-kitchen', kind: 'almirah', x: 19.5, z: -20.4, eyeHeight: 1.5, facing: Math.PI / 2, viewHalfAngle: 0.5, room: 'kitchen' },
+    { id: 'almirah-dining', kind: 'almirah', x: 26.4, z: 19.5, eyeHeight: 1.5, facing: Math.PI, viewHalfAngle: 0.5, room: 'dining' },
+    { id: 'almirah-puja', kind: 'almirah', x: -20.0, z: 20.4, eyeHeight: 1.5, facing: -Math.PI / 2, viewHalfAngle: 0.5, room: 'puja' },
+    { id: 'almirah-library', kind: 'almirah', x: 3.0, z: 20.4, eyeHeight: 1.5, facing: -Math.PI / 2, viewHalfAngle: 0.5, room: 'library' },
+    { id: 'almirah-verandah', kind: 'almirah', x: 17.0, z: -20.4, eyeHeight: 1.5, facing: Math.PI / 2, viewHalfAngle: 0.5, room: 'verandah' },
+    { id: 'almirah-pantry', kind: 'almirah', x: 26.4, z: -19.5, eyeHeight: 1.5, facing: Math.PI, viewHalfAngle: 0.5, room: 'pantry' },
+    { id: 'almirah-corr-w', kind: 'almirah', x: -14.4, z: -4.0, eyeHeight: 1.5, facing: 0, viewHalfAngle: 0.5, room: 'corridor-w' },
+    { id: 'almirah-corr-e', kind: 'almirah', x: 14.4, z: 4.0, eyeHeight: 1.5, facing: Math.PI, viewHalfAngle: 0.5, room: 'corridor-e' },
 
-    // Under-object spots sit low with a wide but ground-level view.
-    { id: 'under-charpoy-s', kind: 'under', x: -14.5, z: -8.5, eyeHeight: 0.3, facing: 0, viewHalfAngle: 1.4, room: 'bedroom-south' },
-    { id: 'under-charpoy-n', kind: 'under', x: -14.5, z: 8.5, eyeHeight: 0.3, facing: 0, viewHalfAngle: 1.4, room: 'bedroom-north' },
-    { id: 'under-kitchen-table', kind: 'under', x: 11.5, z: -8.0, eyeHeight: 0.38, facing: -Math.PI / 2, viewHalfAngle: 1.4, room: 'kitchen' },
-    { id: 'under-verandah-bench', kind: 'under', x: -6.0, z: -13.2, eyeHeight: 0.26, facing: Math.PI / 2, viewHalfAngle: 1.3, room: 'verandah' },
+    { id: 'under-charpoy-s', kind: 'under', x: -22, z: -16, eyeHeight: 0.30, facing: 0, viewHalfAngle: 1.4, room: 'bedroom-south' },
+    { id: 'under-charpoy-n', kind: 'under', x: -22, z: 16, eyeHeight: 0.30, facing: 0, viewHalfAngle: 1.4, room: 'bedroom-north' },
+    { id: 'under-kitchen-table', kind: 'under', x: 20, z: -14, eyeHeight: 0.38, facing: -Math.PI / 2, viewHalfAngle: 1.4, room: 'kitchen' },
+    { id: 'under-dining', kind: 'under', x: 21, z: 15, eyeHeight: 0.40, facing: Math.PI, viewHalfAngle: 1.4, room: 'dining' },
+    { id: 'under-library-desk', kind: 'under', x: 16, z: 15, eyeHeight: 0.38, facing: -Math.PI / 2, viewHalfAngle: 1.4, room: 'library' },
+    { id: 'under-bench-w', kind: 'under', x: -10, z: -20.5, eyeHeight: 0.26, facing: Math.PI / 2, viewHalfAngle: 1.3, room: 'verandah' },
+    { id: 'under-bench-e', kind: 'under', x: 10, z: -20.5, eyeHeight: 0.26, facing: Math.PI / 2, viewHalfAngle: 1.3, room: 'verandah' },
   ];
 
   const rooms: Room[] = [
     { name: 'courtyard', label: 'Courtyard', x: 0, z: 0 },
-    { name: 'verandah', label: 'Verandah', x: 0, z: -11 },
-    { name: 'kitchen', label: 'Kitchen', x: 13, z: -8 },
-    { name: 'store', label: 'Store Room', x: 13, z: 8 },
-    { name: 'puja', label: 'Puja Room', x: 0, z: 11 },
-    { name: 'bedroom-south', label: 'South Bedroom', x: -13, z: -8 },
-    { name: 'bedroom-north', label: 'North Bedroom', x: -13, z: 8 },
+    { name: 'corridor-s', label: 'South Corridor', x: 0, z: -10.2 },
+    { name: 'corridor-n', label: 'North Corridor', x: 0, z: 10.2 },
+    { name: 'corridor-w', label: 'West Corridor', x: -13.2, z: 0 },
+    { name: 'corridor-e', label: 'East Corridor', x: 13.2, z: 0 },
+    { name: 'verandah', label: 'Verandah', x: 0, z: -18.0 },
+    { name: 'kitchen', label: 'Kitchen', x: 22, z: -14 },
+    { name: 'pantry', label: 'Pantry', x: 22, z: -20 },
+    { name: 'dining', label: 'Dining Room', x: 22, z: 14 },
+    { name: 'puja', label: 'Puja Room', x: -12, z: 18 },
+    { name: 'library', label: 'Library', x: 12, z: 18 },
+    { name: 'bedroom-south', label: 'South Bedroom', x: -22, z: -13 },
+    { name: 'bedroom-north', label: 'North Bedroom', x: -22, z: 13 },
   ];
 
   const keySpawns = [
-    { x: -16.5, z: -5.0, room: 'bedroom-south' },
-    { x: -16.5, z: 5.0, room: 'bedroom-north' },
-    { x: 14.0, z: -12.5, room: 'kitchen' },
-    { x: 16.0, z: 3.0, room: 'store' },
-    { x: 3.5, z: 13.0, room: 'puja' },
-    { x: -3.0, z: -13.5, room: 'verandah' },
-    { x: 5.5, z: 3.5, room: 'courtyard' },
+    { x: -25.0, z: -8.0, room: 'bedroom-south' },
+    { x: -25.0, z: 8.0, room: 'bedroom-north' },
+    { x: 23.0, z: -11.0, room: 'kitchen' },
+    { x: 24.5, z: -21.0, room: 'pantry' },
+    { x: 24.0, z: 12.0, room: 'dining' },
+    { x: -16.5, z: 20.5, room: 'puja' },
+    { x: 9.0, z: 20.0, room: 'library' },
+    { x: -18.0, z: -20.0, room: 'verandah' },
+    { x: 8.0, z: 5.0, room: 'courtyard' },
   ];
 
   const roomAt = new Map(rooms.map((r) => [r.name, r]));
@@ -239,33 +402,35 @@ export function buildMansion(): Mansion {
   return {
     bounds: { minX, maxX, minZ, maxZ },
     solids,
+    doors,
     hidingSpots,
     rooms,
     keySpawns,
-    // Survivors start on the verandah, just inside the main gate.
     /**
      * Survivors start in the courtyard, at the centre of the house.
      *
      * They spawned on the verandah at first, two metres from the gate, which
      * meant that whoever found the key simply turned round and walked out —
      * the match was decided before the ghost had crossed a room. Starting at
-     * the hub makes the key a round trip: out to a room to find it, then the
-     * whole way back down the house with it, which is where the game is.
-     *
-     * Spread wide enough that nobody spawns inside anyone else's camera.
+     * the hub makes the key a round trip.
      */
     survivorSpawns: [
-      { x: -4.2, z: -3.2 },
-      { x: 4.2, z: -3.2 },
-      { x: -4.2, z: 3.2 },
-      { x: 4.2, z: 3.2 },
-      { x: 0, z: -4.0 },
+      { x: -6.0, z: -3.5 },
+      { x: 6.0, z: -3.5 },
+      { x: -6.0, z: 3.5 },
+      { x: 6.0, z: 3.5 },
+      { x: 0, z: -4.8 },
     ],
-    // The ghost starts in the store room: far from the courtyard, out of
-    // sight of every survivor spawn, and clear of the crates so it does not
-    // begin the match with its face in a box.
-    ghostSpawn: { x: 13.8, z: 9.0 },
-    exit: { x: 0, z: -14.8, hx: 1.2, hz: 0.5 },
+    /**
+     * The ghost starts in the far corner of the library.
+     *
+     * That is roughly forty metres and four doorways from the courtyard — far
+     * enough that its first footsteps are a distant warning rather than an
+     * immediate threat, and far enough that survivors get a genuine head start
+     * on searching before anything finds them.
+     */
+    ghostSpawn: { x: 22.0, z: 20.5 },
+    exit: { x: 0, z: -21.6, hx: 1.6, hz: 0.6 },
     roomAt,
     courtyard,
   };

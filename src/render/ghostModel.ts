@@ -30,6 +30,14 @@ import * as THREE from 'three';
  */
 export const GHOST_TEXTURE_URL: string | null = '/assets/ghost.png';
 
+/**
+ * Path to the ghost's body artwork, served from `public/`.
+ *
+ * Generated from `body.png` by `tools/import-ghost.py`. Set to null to fall
+ * back to the procedural form.
+ */
+export const GHOST_BODY_URL: string | null = '/assets/ghost-body.png';
+
 
 export interface GhostModel {
   object: THREE.Object3D;
@@ -45,6 +53,8 @@ export interface GhostModel {
    * image pasted over it.
    */
   setLunge(v: number): void;
+  /** Current world-space Y of the face, so the scare can aim at it. */
+  headWorldY(): number;
   dispose(): void;
 }
 
@@ -52,6 +62,8 @@ export interface GhostModel {
 interface Spectral {
   uTime: { value: number };
   uPresence: { value: number };
+  /** 0..1 during a jumpscare; brightens the face so it is actually visible. */
+  uLunge: { value: number };
   uColor: { value: THREE.Color };
   uDeep: { value: THREE.Color };
   uMap: { value: THREE.Texture | null };
@@ -101,6 +113,7 @@ function spectralMaterial(u: Spectral, opts: { dissolveFrom: number; useMap: boo
     fragmentShader: `
       uniform float uTime;
       uniform float uPresence;
+      uniform float uLunge;
       uniform vec3 uColor;
       uniform vec3 uDeep;
       uniform sampler2D uMap;
@@ -138,7 +151,10 @@ function spectralMaterial(u: Spectral, opts: { dissolveFrom: number; useMap: boo
              * full strength and is lifted a little at the silhouette, so it
              * reads across a room while still belonging to the body.
              */
-            col = tex.rgb * (1.25 + fres * 0.55);
+            // uLunge lifts the face during a jumpscare. The house is lit at
+            // the edge of visibility by design, which is right for hunting
+            // and wrong for the one shot where the art has to be legible.
+            col = tex.rgb * (1.25 + fres * 0.55 + uLunge * 2.6);
             alpha = tex.a * (0.94 + fres * 0.06);
             // Skip the dissolve and ripple below: the face is not cloth.
             gl_FragColor = vec4(col, alpha * uPresence);
@@ -152,6 +168,61 @@ function spectralMaterial(u: Spectral, opts: { dissolveFrom: number; useMap: boo
         float ripple = 0.86 + 0.14 * sin(vLocalY * 14.0 - uTime * 2.6);
 
         gl_FragColor = vec4(col, alpha * dissolve * ripple * uPresence);
+      }
+    `,
+  });
+}
+
+/**
+ * The material for the photographed body.
+ *
+ * Deliberately simpler than the face and cloth shader: the artwork is already
+ * lit, so relighting it only muddies it. This shows the texture, tints it very
+ * slightly cold to match the head, and dissolves the hem so the figure trails
+ * into the floor instead of standing on a visible edge.
+ */
+function bodyMaterial(
+  u: Spectral, tex: THREE.Texture | null, ready: { value: number },
+): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uMap: { value: tex },
+      uReady: ready as unknown as THREE.IUniform,
+      uPresence: u.uPresence,
+      uTime: u.uTime,
+    },
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    vertexShader: `
+      uniform float uTime;
+      varying vec2 vUv;
+      varying float vY;
+      void main() {
+        vUv = uv;
+        vY = uv.y;
+        vec3 p = position;
+        // The hem sways; the shoulders barely move.
+        float amp = pow(1.0 - uv.y, 2.0) * 0.045;
+        p.x += sin(uTime * 1.15 + position.y * 2.2) * amp;
+        p.z += cos(uTime * 0.9 + position.y * 1.7) * amp;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D uMap;
+      uniform float uReady;
+      uniform float uPresence;
+      varying vec2 vUv;
+      varying float vY;
+      void main() {
+        if (uReady < 0.5) discard;
+        vec4 tex = texture2D(uMap, vUv);
+        // A touch cold, so the body belongs with the head.
+        vec3 col = tex.rgb * vec3(0.93, 0.97, 1.06);
+        // Dissolve the last of the hem into the floor.
+        float hem = smoothstep(0.0, 0.16, vY);
+        gl_FragColor = vec4(col, tex.a * hem * uPresence);
       }
     `,
   });
@@ -185,9 +256,23 @@ export function createGhost(): GhostModel {
     disposables.push(texture);
   }
 
+  let bodyTexture: THREE.Texture | null = null;
+  const bodyReady = { value: 0 };
+  if (GHOST_BODY_URL) {
+    bodyTexture = new THREE.TextureLoader().load(
+      GHOST_BODY_URL,
+      () => { bodyReady.value = 1; },
+      undefined,
+      () => { bodyReady.value = 0; },
+    );
+    bodyTexture.colorSpace = THREE.SRGBColorSpace;
+    disposables.push(bodyTexture);
+  }
+
   const u: Spectral = {
     uTime: { value: 0 },
     uPresence: { value: 1 },
+    uLunge: { value: 0 },
     uColor: { value: new THREE.Color(0x9aa8ad) },
     uDeep: { value: new THREE.Color(0x0b0f12) },
     uMap: { value: texture },
@@ -198,37 +283,64 @@ export function createGhost(): GhostModel {
   const body = new THREE.Object3D();
   group.add(body);
 
-  // --- The shroud: the trailing lower body, widest at the hem. ---
-  const shroudProfile: THREE.Vector2[] = [];
-  for (let i = 0; i <= 24; i++) {
-    const t = i / 24;
-    // y runs from -1.30 (the dissolving tail) up to 0.38 (the shoulders).
-    const y = -1.30 + t * 1.68;
-    /**
-     * The silhouette.
-     *
-     * The first profile swelled to nearly half a metre of radius in the
-     * middle and tapered at both ends, which from a distance is the exact
-     * outline of a chess pawn — the least frightening shape available. A
-     * figure needs to be narrow at the top and flare downward, so the eye
-     * reads shoulders and hanging cloth rather than a skittle.
-     */
-    const flare = Math.pow(1 - t, 1.25) * 0.46;
-    const shoulder = Math.exp(-(((t - 0.88) / 0.16) ** 2)) * 0.19;
-    const r = 0.17 + flare + shoulder;
-    shroudProfile.push(new THREE.Vector2(r, y));
+  /**
+   * The body: the supplied photograph on a curved, solid panel.
+   *
+   * The ghost was previously a translucent lathe — a spectral wisp you could
+   * see the room through, which read as a special effect rather than a person
+   * standing in the dark. A hunter has to have mass. So the body is now an
+   * opaque panel carrying the body artwork, bowed around the vertical axis so
+   * it is not obviously flat from an angle, with the hem dissolving into the
+   * floor so it still moves like something that does not quite walk.
+   */
+  const bodyGeo = track(new THREE.PlaneGeometry(1.15, 1.85, 16, 20));
+  {
+    const pos = bodyGeo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      // A cylindrical bow: the edges fall away from the viewer.
+      pos.setZ(i, -((x / 0.575) ** 2) * 0.22);
+    }
+    pos.needsUpdate = true;
+    bodyGeo.computeVertexNormals();
   }
-  const shroudGeo = track(new THREE.LatheGeometry(shroudProfile, 28));
-  const shroudMat = track(spectralMaterial(u, { dissolveFrom: -1.25, useMap: false }));
-  const shroud = new THREE.Mesh(shroudGeo, shroudMat);
-  body.add(shroud);
-
-  // --- Torso: a tapered shell over the top of the shroud. ---
-  const torsoGeo = track(new THREE.CylinderGeometry(0.30, 0.42, 0.62, 20, 1, true));
-  const torsoMat = track(spectralMaterial(u, { dissolveFrom: -0.5, useMap: false }));
-  const torso = new THREE.Mesh(torsoGeo, torsoMat);
-  torso.position.y = 0.42;
+  const bodyMat = track(bodyMaterial(u, bodyTexture, bodyReady));
+  const torso = new THREE.Mesh(bodyGeo, bodyMat);
+  // Panel centre sits below the head (pivot 1.15 + 0.92 = 2.07m).
+  torso.position.y = -0.10;
   body.add(torso);
+
+  /**
+   * A dark volume behind the panel.
+   *
+   * Without it the body vanishes when seen from behind or at a steep angle,
+   * and you can see the room through the ghost's back. This is never really
+   * looked at — it only has to stop the figure being a hole in space.
+   */
+  const bulkProfile: THREE.Vector2[] = [];
+  for (let i = 0; i <= 16; i++) {
+    const t = i / 16;
+    const y = -0.02 + t * 1.62;
+    const flare = Math.pow(1 - t, 1.3) * 0.34;
+    bulkProfile.push(new THREE.Vector2(0.13 + flare, y));
+  }
+  const bulkGeo = track(new THREE.LatheGeometry(bulkProfile, 20));
+  /*
+   * `BackSide` only, and drawn first.
+   *
+   * As a double-sided opaque lathe this filled the screen with a black
+   * silhouette and hid both the body artwork and the face behind it — the
+   * jumpscare fired and the player saw a dark rectangle. Rendering only the
+   * far wall of the volume gives the figure a back without ever putting
+   * geometry between the camera and the front of it.
+   */
+  const bulkMat = track(new THREE.MeshBasicMaterial({
+    color: 0x06080c, transparent: true, opacity: 0.92, side: THREE.BackSide,
+  }));
+  const shroud = new THREE.Mesh(bulkGeo, bulkMat);
+  shroud.position.y = -0.95;
+  shroud.renderOrder = -2;
+  body.add(shroud);
 
   // --- Head. ---
   const headGroup = new THREE.Object3D();
@@ -295,22 +407,14 @@ export function createGhost(): GhostModel {
     headGroup.add(eyes);
   }
 
-  // --- Arms: long, tapering, and loose. They drift while it hunts and sweep
-  //     forward on the lunge. ---
-  const armGeo = track(new THREE.CylinderGeometry(0.055, 0.11, 0.78, 10, 1, true));
-  const armMat = track(spectralMaterial(u, { dissolveFrom: -0.9, useMap: false }));
+  /*
+   * No separate arms.
+   *
+   * The body artwork already has arms in it, and a pair of modelled limbs
+   * sticking out of a photograph of a person reads as a glitch rather than a
+   * ghost. The lunge animates the whole body instead.
+   */
   const arms: THREE.Object3D[] = [];
-  for (const side of [-1, 1]) {
-    const pivot = new THREE.Object3D();
-    pivot.position.set(side * 0.34, 0.62, 0);
-    const arm = new THREE.Mesh(armGeo, armMat);
-    // Pivot at the shoulder, not the middle of the limb.
-    arm.position.y = -0.39;
-    pivot.add(arm);
-    pivot.rotation.z = side * 0.18;
-    body.add(pivot);
-    arms.push(pivot);
-  }
 
   // --- Light. The ghost carries its own faint glow, so it separates from a
   //     dark wall and so survivors get a half-second of warning. ---
@@ -364,7 +468,12 @@ export function createGhost(): GhostModel {
     },
 
     setPresence(v) { presence = clamp(v, 0, 1); },
-    setLunge(v) { lunge = clamp(v, 0, 1); },
+    setLunge(v) { lunge = clamp(v, 0, 1); u.uLunge.value = lunge; },
+    headWorldY() {
+      const v = new THREE.Vector3();
+      face.getWorldPosition(v);
+      return v.y;
+    },
     dispose() { for (const d of disposables) d.dispose(); },
   };
 }

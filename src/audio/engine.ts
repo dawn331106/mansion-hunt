@@ -1,4 +1,5 @@
 import { AUDIO } from '../game/config.js';
+import { Ambience } from './ambience.js';
 import { createGhostVoice, ensureGhostWorklet, type GhostVoiceChain } from './ghostVoice.js';
 
 /**
@@ -31,6 +32,9 @@ export class AudioEngine {
   /** Reused footstep buffers, one per surface, generated not loaded. */
   private readonly stepBuffers: AudioBuffer[] = [];
 
+  /** The house's own voice: drone, wind, creaks. Started on resume. */
+  private ambience: Ambience | null = null;
+
   constructor() {
     this.ctx = new AudioContext();
     this.master = this.ctx.createGain();
@@ -54,6 +58,22 @@ export class AudioEngine {
   async resume(): Promise<void> {
     if (this.ctx.state === 'suspended') await this.ctx.resume();
     await ensureGhostWorklet(this.ctx).catch(() => { /* fallback handles it */ });
+  }
+
+  /**
+   * Start the ambient bed.
+   *
+   * Separate from `resume` because it should begin when the match does, not
+   * when the context wakes — a drone playing under the menu is atmosphere
+   * wasted before anyone is in the house to be unsettled by it.
+   */
+  startAmbience(): void {
+    if (!this.ambience) this.ambience = new Ambience(this.ctx, this.world);
+  }
+
+  /** How close the ghost feels, 0..1. Darkens the ambient bed. */
+  setDread(v: number): void {
+    this.ambience?.setDread(v);
   }
 
   /**
@@ -179,6 +199,8 @@ export class AudioEngine {
    * that keeps the moment going a beat longer than is comfortable.
    */
   private jumpscareStinger(t: number): void {
+    // The house goes quiet while the scare has the screen.
+    this.ambience?.duck(2.6);
     // 1. The transient: filtered noise, fast attack, immediate.
     const noise = this.ctx.createBufferSource();
     const len = Math.floor(this.ctx.sampleRate * 1.4);
@@ -272,6 +294,8 @@ export class AudioEngine {
    * make a sound after a few rounds.
    */
   async close(): Promise<void> {
+    this.ambience?.stop();
+    this.ambience = null;
     for (const id of [...this.voices.keys()]) this.removeVoice(id);
     if (this.ctx.state !== 'closed') {
       await this.ctx.close().catch(() => { /* already closing */ });

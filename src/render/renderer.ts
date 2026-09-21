@@ -33,6 +33,13 @@ export class Renderer {
   private eyeHeight = SURVIVOR.eyeHeight;
   /** Spectator orbit angle, used after the player is caught. */
   private spectatorAngle = 0;
+  /**
+   * Where the jumpscare wants the ghost this frame.
+   *
+   * The scare is computed while placing the camera but has to be applied when
+   * positioning actors, and the two happen in different passes.
+   */
+  private scareGhost: { x: number; z: number; yaw: number } | null = null;
 
   constructor(canvas: HTMLCanvasElement, private readonly mansion: Mansion) {
     this.renderer = new THREE.WebGLRenderer({
@@ -80,10 +87,12 @@ export class Renderer {
    * and a way to keep watching your friends fail.
    */
   render(state: GameState, role: Role, viewerId: string, dt: number, time: number): void {
+    // The camera pass first: it drives the jumpscare, which decides where the
+    // ghost is standing, and the actor pass needs that answer.
+    this.placeCamera(state, role, viewerId, dt, time);
     this.syncActors(state, role, time);
     this.syncProps(state, time);
     this.syncPulse(state, role, time);
-    this.placeCamera(state, role, viewerId, dt, time);
     this.renderer.render(this.world.scene, this.camera);
   }
 
@@ -100,11 +109,19 @@ export class Renderer {
     }
 
     const g = state.ghost;
-    this.ghostModel.object.position.set(g.pos.x, 0, g.pos.z);
-    this.ghostModel.object.rotation.y = -g.yaw - Math.PI / 2;
+    if (this.scareGhost) {
+      // Mid-scare the ghost is wherever the scare says, which is in the
+      // player's face regardless of where it actually caught them.
+      this.ghostModel.object.position.set(this.scareGhost.x, 0, this.scareGhost.z);
+      this.ghostModel.object.rotation.y = -this.scareGhost.yaw - Math.PI / 2;
+    } else {
+      this.ghostModel.object.position.set(g.pos.x, 0, g.pos.z);
+      this.ghostModel.object.rotation.y = -g.yaw - Math.PI / 2;
+    }
     this.ghostModel.update(0, time, this.camera);
-    // Playing as the ghost, your own body would fill the screen; hide it.
-    this.ghostModel.object.visible = role !== 'ghost';
+    // Playing as the ghost, your own body would fill the screen; hide it —
+    // except during the scare, where it is the whole point.
+    this.ghostModel.object.visible = role !== 'ghost' || this.scareGhost !== null;
   }
 
   private syncProps(state: GameState, time: number): void {
@@ -160,8 +177,21 @@ export class Renderer {
   private placeCamera(
     state: GameState, role: Role, viewerId: string, dt: number, time: number,
   ): void {
+    /*
+     * Tell the scare where the face actually is before it aims the camera.
+     *
+     * Aiming at a hard-coded height was wrong by about 15cm, which is nothing
+     * at normal FOV and everything at the punched-in FOV of the hold — the
+     * face sat just above the top of the screen and the scare showed a torso.
+     * Measuring the model each frame means the shot cannot drift out of frame
+     * when the body proportions change.
+     */
+    this.jumpscare.setFaceHeight(this.ghostModel.headWorldY());
     const scare = this.jumpscare.update(dt, this.camera, BASE_FOV);
     this.ghostModel.setLunge(scare.lunge);
+    this.scareGhost = scare.ghostAt
+      ? { x: scare.ghostAt.x, z: scare.ghostAt.z, yaw: scare.ghostYaw }
+      : null;
 
     if (role === 'ghost') {
       const g = state.ghost;
@@ -191,7 +221,10 @@ export class Renderer {
       // the look. Nothing else about the body updates any more.
       this.camera.position.set(self.pos.x, SURVIVOR.eyeHeight * 0.8, self.pos.z);
       if (scare.lookAt) {
-        this.camera.lookAt(scare.lookAt.x, 1.45, scare.lookAt.z);
+        // Use the target's own height. Two call sites here hard-coded 1.45
+        // and 1.5, discarding the y the scare had carefully computed — so the
+        // camera stared at chest height while the face was a metre above it.
+        this.camera.lookAt(scare.lookAt);
         this.camera.position.x += scare.shake.x;
         this.camera.position.y += scare.shake.y;
         this.camera.position.z += scare.shake.z;
@@ -230,7 +263,7 @@ export class Renderer {
 
     if (scare.lookAt) {
       // The scare takes the camera; the player's own aim stops mattering.
-      this.camera.lookAt(scare.lookAt.x, 1.5, scare.lookAt.z);
+      this.camera.lookAt(scare.lookAt);
       this.camera.position.x += scare.shake.x;
       this.camera.position.y += scare.shake.y;
       this.camera.position.z += scare.shake.z;

@@ -32,6 +32,7 @@ let unresolved = 0;
 let keyFound = 0;
 let escapes = 0;
 let hideEvents = 0;
+let carrierDeaths = 0; let keyEscapes = 0;
 let totalTime = 0;
 const firstDeaths = [];
 const keyTimes = [];
@@ -69,6 +70,11 @@ for (let seed = 1; seed <= MATCHES; seed++) {
       sawDeath = true;
       firstDeaths.push(state.time);
     }
+    for (const c of ev.caught) {
+      const v = state.survivors.find((s) => s.id === c.survivorId);
+      if (v && v.hasKey) carrierDeaths++;
+    }
+    if (ev.escaped) keyEscapes++;
     if (state.phase !== 'playing') break;
   }
 

@@ -5,21 +5,21 @@ import { MATCH } from '../game/config.js';
  * The catch.
  *
  * A jumpscare works or it does not, and what separates the two is almost
- * entirely timing. This one runs on a fixed 1.5-second curve with four
- * overlapping stages, none of which the player can interrupt:
+ * entirely timing. This runs on a fixed 2.6-second curve with four overlapping
+ * stages, none of which the player can interrupt:
  *
  *   0.00-0.08  SEIZE     The camera is torn off its moorings and snapped to
  *                        face the ghost. Control is gone before you register
  *                        that anything happened.
- *   0.08-0.45  LUNGE     The ghost surges into the lens in 3D — the body
- *                        model's own lunge animation, not an image — while
- *                        the camera shakes hard and the FOV punches in.
- *   0.45-1.10  HOLD      It fills the frame. Chromatic aberration, scanline
- *                        tearing and a violent vignette. This is the part
- *                        that is genuinely unpleasant, and it is held just
- *                        long enough to be too long.
- *   1.10-1.50  COLLAPSE  Hard cut to black, sound gone, then the spectator
- *                        view fades up.
+ *   0.05-0.42  LUNGE     The ghost is dragged bodily into the lens — not its
+ *                        own walk, but a hard interpolation from wherever it
+ *                        stood to arm's length from the camera — while the
+ *                        view shakes and the FOV punches in.
+ *   0.36-2.29  HOLD      The face fills the frame and simply stays there.
+ *                        This is the longest stage on purpose: at 1.5s total
+ *                        the ghost was only ever on screen while moving fast,
+ *                        which is exactly when a face cannot be read.
+ *   2.24-2.60  COLLAPSE  Hard cut to black, then the spectator view fades up.
  *
  * The overlay is a full-screen shader rather than DOM, so it can distort what
  * is actually on screen instead of merely covering it.
@@ -30,6 +30,8 @@ export interface Jumpscare {
   mesh: THREE.Mesh;
   /** Start the scare. `ghostPos` is where the killer is, in world space. */
   trigger(ghostPos: THREE.Vector3): void;
+  /** Where the ghost's face sits, so the camera can frame it exactly. */
+  setFaceHeight(y: number): void;
   /** True while the scare owns the screen and input. */
   get active(): boolean;
   /** 0..1 through the sequence. */
@@ -43,6 +45,19 @@ export interface Jumpscare {
     lookAt: THREE.Vector3 | null;
     /** 0..1, fed to the ghost model's own lunge animation. */
     lunge: number;
+    /**
+     * Where the ghost should be drawn this frame, or null when the scare is
+     * not running.
+     *
+     * The scare moves the ghost itself rather than only the camera. Letting it
+     * lunge from wherever it happened to be standing meant it was often behind
+     * furniture, or side-on, or simply too far away to see — the scare fired
+     * and the player saw a red screen and nothing else. Hauling it to a fixed
+     * distance in front of the lens is what guarantees there is a face there.
+     */
+    ghostAt: THREE.Vector3 | null;
+    /** Which way the ghost should face: straight at the camera. */
+    ghostYaw: number;
   };
   dispose(): void;
 }
@@ -133,15 +148,26 @@ export function createJumpscare(): Jumpscare {
   let elapsed = -1;
   const target = new THREE.Vector3();
   const shake = new THREE.Vector3();
+  /** Where the ghost stood when the scare began. */
+  const from = new THREE.Vector3();
+  const ghostAt = new THREE.Vector3();
+  /** Where the camera was when the scare began, so the lunge aims at it. */
+  const eye = new THREE.Vector3();
+  let eyeYaw = 0;
 
   const DUR = MATCH.jumpscareDuration;
+
+  let faceY = 2.1;
 
   return {
     mesh,
 
+    setFaceHeight(y) { if (Number.isFinite(y) && y > 0.5) faceY = y; },
+
     trigger(ghostPos) {
       elapsed = 0;
       target.copy(ghostPos);
+      from.copy(ghostPos);
       mesh.visible = true;
       uniforms.uActive.value = 1;
     },
@@ -151,7 +177,14 @@ export function createJumpscare(): Jumpscare {
 
     update(dt, camera, baseFov) {
       if (elapsed < 0) {
-        return { shake: shake.set(0, 0, 0), lookAt: null, lunge: 0 };
+        return { shake: shake.set(0, 0, 0), lookAt: null, lunge: 0, ghostAt: null, ghostYaw: 0 };
+      }
+
+      // Capture the camera on the first frame: everything is measured from
+      // where the player was standing when they were caught.
+      if (elapsed === 0) {
+        eye.copy(camera.position);
+        eyeYaw = Math.atan2(from.z - eye.z, from.x - eye.x);
       }
 
       elapsed += dt;
@@ -160,15 +193,27 @@ export function createJumpscare(): Jumpscare {
       uniforms.uProgress.value = t;
 
       // --- Stage curves. Each is a window on the same normalised clock. ---
-      const seize = smoothstep(0.0, 0.055, t);
-      const lunge = smoothstep(0.05, 0.30, t);
-      const hold = smoothstep(0.28, 0.40, t) * (1 - smoothstep(0.70, 0.76, t));
-      const collapse = smoothstep(0.73, 0.88, t);
+      /*
+       * Stage windows, over a 2.6s clock.
+       *
+       * The earlier 1.5s version spent almost all of itself lunging and then
+       * cut to black, so the face was only ever on screen while it was moving
+       * fast — which is exactly when it cannot be read. The hold is now the
+       * longest stage by a wide margin: the ghost arrives, fills the frame,
+       * and stays there long enough to be uncomfortable.
+       */
+      const seize = smoothstep(0.0, 0.03, t);
+      const lunge = smoothstep(0.02, 0.16, t);
+      const hold = smoothstep(0.14, 0.22, t) * (1 - smoothstep(0.80, 0.88, t));
+      const collapse = smoothstep(0.86, 0.97, t);
 
       // --- Shake. Violent at the lunge, tapering through the hold. Driven by
       //     two out-of-phase sines rather than random, so it reads as an
       //     impact rather than as noise. ---
-      const shakeAmt = (lunge * (1 - collapse)) * 0.16 + hold * 0.05;
+      // Violent on impact, then a fine tremor through the hold — a scare that
+      // shakes at full amplitude for two seconds is unreadable, not scary.
+      const impact = lunge * (1 - smoothstep(0.16, 0.34, t));
+      const shakeAmt = impact * 0.17 + hold * 0.022;
       shake.set(
         Math.sin(elapsed * 71) * shakeAmt,
         Math.sin(elapsed * 53 + 1.3) * shakeAmt,
@@ -177,7 +222,9 @@ export function createJumpscare(): Jumpscare {
 
       // --- FOV punch: in hard on the lunge, so the ghost appears to close
       //     faster than it physically moves. ---
-      camera.fov = baseFov - lunge * 22 * (1 - collapse) + hold * 4;
+      // Punch in hard and stay in: pulling the FOV back during the hold would
+      // shrink the face at the exact moment it is meant to be overwhelming.
+      camera.fov = baseFov - lunge * 20 * (1 - collapse);
       camera.updateProjectionMatrix();
 
       uniforms.uAberration.value = lunge * (1 - collapse);
@@ -192,8 +239,47 @@ export function createJumpscare(): Jumpscare {
         camera.updateProjectionMatrix();
       }
 
+      /*
+       * Drag the ghost to the lens.
+       *
+       * It ends up 0.95m from where the camera was — close enough that the
+       * face fills the frame at the punched-in FOV, far enough that the near
+       * clip plane does not slice through it.
+       */
+      /*
+       * 0.95m put the ghost so close that its *body* filled the frame and the
+       * head was above the top of the screen — the scare fired and the player
+       * saw a dark rectangle. Backing off to 1.7m frames the head and
+       * shoulders at the punched-in FOV, which is the shot the whole sequence
+       * exists to deliver.
+       */
+      const ease = lunge * lunge * (3 - 2 * lunge);
+      /*
+       * Distance is set by the height difference, not picked by eye.
+       *
+       * The ghost's face is about a metre above a survivor's eyeline, so at
+       * 1.05m away the camera has to crane up 45 degrees to see it and the
+       * shot becomes a view up a chin. Standing it back far enough that the
+       * face is roughly 30 degrees up puts the head and shoulders in frame
+       * with the body beneath, which is the composition a jumpscare wants.
+       */
+      const rise = Math.max(0.2, faceY - eye.y);
+      const range = Math.max(1.6, rise / Math.tan(0.52));
+      const endX = eye.x + Math.cos(eyeYaw) * range;
+      const endZ = eye.z + Math.sin(eyeYaw) * range;
+      ghostAt.set(
+        from.x + (endX - from.x) * ease,
+        0,
+        from.z + (endZ - from.z) * ease,
+      );
+      // Look at where the face measurably is, not where it is assumed to be.
+      target.set(ghostAt.x, faceY, ghostAt.z);
+
       return {
         shake,
+        ghostAt,
+        // Face the camera dead on.
+        ghostYaw: eyeYaw + Math.PI,
         // The camera is dragged onto the ghost and held there.
         lookAt: seize > 0 ? target : null,
         lunge,

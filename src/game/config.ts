@@ -106,7 +106,7 @@ export const MATCH = {
    * ambush. The ghost spends it standing in the dark, which is its own kind
    * of dread for anyone who can hear it.
    */
-  ghostHeadStart: 14,
+  ghostHeadStart: 20,
 
   /**
    * Seconds before the house claims everyone. 0 disables the clock.
@@ -116,7 +116,16 @@ export const MATCH = {
    * A clock is the honest resolution — the night ends, and whoever is still
    * inside belongs to the house.
    */
-  timeLimit: 210,
-  /** How long the jumpscare owns the screen, in seconds. */
-  jumpscareDuration: 1.5,
+  timeLimit: 260,
+  /**
+   * How long the jumpscare owns the screen, in seconds.
+   *
+   * 1.5s was too short to register: by the time you had turned to look, the
+   * ghost had already lunged and the screen was cutting to black, so the face
+   * you were meant to be frightened by was never actually legible. The extra
+   * second is almost entirely hold time — the part where it fills the frame
+   * and simply stays there, which is what makes a scare uncomfortable rather
+   * than merely loud.
+   */
+  jumpscareDuration: 2.6,
 } as const;

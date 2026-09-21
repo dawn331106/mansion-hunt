@@ -16,13 +16,19 @@ import type { Mansion, Solid } from '../game/map.js';
 
 /** Per-room palette. Wall, floor, and the colour of that room's lamp. */
 const ROOM_STYLE: Record<string, { wall: number; floor: number; light: number; intensity: number }> = {
-  courtyard:       { wall: 0x6e6154, floor: 0x585044, light: 0x8fa4c8, intensity: 18 },
+  courtyard:       { wall: 0x6e6154, floor: 0x585044, light: 0x8fa4c8, intensity: 16 },
+  'corridor-s':    { wall: 0x6a5f52, floor: 0x554c42, light: 0xd8a870, intensity: 14 },
+  'corridor-n':    { wall: 0x655a60, floor: 0x50474e, light: 0xb49ad0, intensity: 14 },
+  'corridor-w':    { wall: 0x5e626c, floor: 0x4a4e58, light: 0x92a8cc, intensity: 14 },
+  'corridor-e':    { wall: 0x6e6050, floor: 0x574c40, light: 0xe0a060, intensity: 14 },
   verandah:        { wall: 0x7a6552, floor: 0x655546, light: 0xffb066, intensity: 26 },
-  kitchen:         { wall: 0x6e5843, floor: 0x58493a, light: 0xff9a4a, intensity: 30 },
-  store:           { wall: 0x5c5346, floor: 0x4a423a, light: 0xa8946c, intensity: 16 },
-  puja:            { wall: 0x82564c, floor: 0x63463c, light: 0xff7a48, intensity: 28 },
-  'bedroom-south': { wall: 0x5a5e68, floor: 0x4a4d56, light: 0x8fa4c4, intensity: 20 },
-  'bedroom-north': { wall: 0x635a6a, floor: 0x4e4856, light: 0xae8ec4, intensity: 20 },
+  kitchen:         { wall: 0x6e5843, floor: 0x58493a, light: 0xff9a4a, intensity: 32 },
+  pantry:          { wall: 0x5c5346, floor: 0x4a423a, light: 0xa8946c, intensity: 14 },
+  dining:          { wall: 0x6b5a4e, floor: 0x554940, light: 0xffa860, intensity: 24 },
+  puja:            { wall: 0x82564c, floor: 0x63463c, light: 0xff7a48, intensity: 30 },
+  library:         { wall: 0x5a5648, floor: 0x49463c, light: 0xc0a878, intensity: 18 },
+  'bedroom-south': { wall: 0x5a5e68, floor: 0x4a4d56, light: 0x8fa4c4, intensity: 22 },
+  'bedroom-north': { wall: 0x635a6a, floor: 0x4e4856, light: 0xae8ec4, intensity: 22 },
 };
 
 const DEFAULT_STYLE = { wall: 0x615b52, floor: 0x4c4741, light: 0xb0a090, intensity: 18 };
@@ -39,6 +45,8 @@ export interface WorldView {
   gateMesh: THREE.Object3D;
   /** Almirah doors, keyed by spot id, so they can swing open. */
   hidingDoors: Map<string, THREE.Object3D>;
+  /** Room doors, keyed by door id, so they can swing as people pass. */
+  roomDoors: Map<string, THREE.Object3D>;
   dispose(): void;
 }
 
@@ -63,7 +71,7 @@ export function buildWorld(mansion: Mansion): WorldView {
     const m = new THREE.Mesh(floorGeo, mat);
     m.rotation.x = -Math.PI / 2;
     m.position.set(r.x, 0, r.z);
-    m.scale.set(14, 14, 1);
+    m.scale.set(20, 20, 1);
     m.receiveShadow = true;
     scene.add(m);
   }
@@ -73,7 +81,7 @@ export function buildWorld(mansion: Mansion): WorldView {
   const base = new THREE.Mesh(floorGeo, baseMat);
   base.rotation.x = -Math.PI / 2;
   base.position.y = -0.02;
-  base.scale.set(80, 80, 1);
+  base.scale.set(140, 140, 1);
   base.receiveShadow = true;
   scene.add(base);
 
@@ -84,12 +92,18 @@ export function buildWorld(mansion: Mansion): WorldView {
   //     the one place you can see the sky. ---
   const ceilMat = track(new THREE.MeshStandardMaterial({ color: 0x2c2822, roughness: 1 }));
   const CEIL_SIZE: Record<string, [number, number]> = {
-    verandah: [36, 9],
-    puja: [36, 9],
-    kitchen: [10, 15],
-    store: [10, 15],
-    'bedroom-south': [10, 15],
-    'bedroom-north': [10, 15],
+    'corridor-s': [56, 7],
+    'corridor-n': [56, 7],
+    'corridor-w': [7, 44],
+    'corridor-e': [7, 44],
+    verandah: [56, 10],
+    puja: [30, 10],
+    library: [30, 10],
+    kitchen: [24, 12],
+    pantry: [24, 10],
+    dining: [24, 12],
+    'bedroom-south': [24, 22],
+    'bedroom-north': [24, 22],
   };
   for (const r of mansion.rooms) {
     const size = CEIL_SIZE[r.name];
@@ -139,24 +153,46 @@ export function buildWorld(mansion: Mansion): WorldView {
   moon.position.set(6, 18, -4);
   moon.target.position.set(0, 0, 0);
   moon.castShadow = true;
-  moon.shadow.mapSize.set(1024, 1024);
-  moon.shadow.camera.left = -12;
-  moon.shadow.camera.right = 12;
-  moon.shadow.camera.top = 12;
-  moon.shadow.camera.bottom = -12;
-  moon.shadow.camera.far = 40;
+  moon.shadow.mapSize.set(2048, 2048);
+  moon.shadow.camera.left = -16;
+  moon.shadow.camera.right = 16;
+  moon.shadow.camera.top = 14;
+  moon.shadow.camera.bottom = -14;
+  moon.shadow.camera.far = 60;
   scene.add(moon);
   scene.add(moon.target);
 
-  // One warm point light per room, at its palette colour.
+  /*
+   * Lamps.
+   *
+   * One light per room was enough when rooms were eight metres across; in a
+   * house this size a single point light leaves most of a room unlit and the
+   * corridors pitch black, and with no map a corridor you cannot see is a
+   * corridor you cannot navigate. Long rooms get a lamp at each end.
+   */
+  const LAMP_SPREAD: Record<string, [number, number][]> = {
+    'corridor-s': [[-18, 0], [0, 0], [18, 0]],
+    'corridor-n': [[-18, 0], [0, 0], [18, 0]],
+    'corridor-w': [[0, -14], [0, 0], [0, 14]],
+    'corridor-e': [[0, -14], [0, 0], [0, 14]],
+    verandah: [[-16, 0], [0, 0], [16, 0]],
+    puja: [[-8, 0], [6, 0]],
+    library: [[-6, 0], [8, 0]],
+    kitchen: [[0, -5], [0, 5]],
+    dining: [[0, -5], [0, 5]],
+    'bedroom-south': [[0, -6], [0, 5]],
+    'bedroom-north': [[0, -5], [0, 6]],
+  };
   for (const r of mansion.rooms) {
-    if (r.name === 'courtyard') continue;
     const st = styleFor(r.name);
-    // Distance and decay tuned so a lamp fills its room and spills a little
-    // through the doorway, which is how you navigate without a map.
-    const l = new THREE.PointLight(st.light, st.intensity, 16, 1.4);
-    l.position.set(r.x, 2.5, r.z);
-    scene.add(l);
+    const offsets = LAMP_SPREAD[r.name] ?? [[0, 0]];
+    // The courtyard is lit by the moon; it gets only a faint warm spill.
+    const scale = r.name === 'courtyard' ? 0.35 : 1;
+    for (const [ox, oz] of offsets) {
+      const l = new THREE.PointLight(st.light, st.intensity * scale, 17, 1.35);
+      l.position.set(r.x + ox, 2.6, r.z + oz);
+      scene.add(l);
+    }
   }
 
   // --- The key: a small glowing object, the one thing worth crossing the house for. ---
@@ -170,6 +206,42 @@ export function buildWorld(mansion: Mansion): WorldView {
   const gateMesh = new THREE.Mesh(track(new THREE.BoxGeometry(2.4, 2.6, 0.18)), gateMat);
   gateMesh.position.set(mansion.exit.x, 1.3, mansion.exit.z);
   scene.add(gateMesh);
+
+  /**
+   * Room doors: a leaf hinged in each opening.
+   *
+   * The leaf is never collidable — a door that could shut you in would make
+   * the ghost unbeatable — so this is purely what you see and hear. It still
+   * earns its place: a door standing open where you left one closed is
+   * information, and a swinging leaf tells you which way something went.
+   */
+  const roomDoors = new Map<string, THREE.Object3D>();
+  const doorGeo = track(new THREE.BoxGeometry(1, 2.25, 0.07));
+  for (const d of mansion.doors) {
+    const st = styleFor(d.room);
+    const mat = track(new THREE.MeshStandardMaterial({
+      color: darken(st.wall, 0.42), roughness: 0.75,
+    }));
+    // A pivot at the hinge, with the leaf offset so it swings about its edge.
+    const pivot = new THREE.Object3D();
+    pivot.position.set(d.x, 1.15, d.z);
+    // An 'x' wall runs east-west, so its door faces north-south.
+    pivot.rotation.y = d.axis === 'x' ? 0 : Math.PI / 2;
+
+    const leaf = new THREE.Mesh(doorGeo, mat);
+    const w = d.half * 2 * 0.96;
+    leaf.scale.x = w;
+    leaf.position.x = w / 2;
+    leaf.castShadow = true;
+    pivot.add(leaf);
+    // Hinge on one side of the opening.
+    pivot.position.x += d.axis === 'x' ? -d.half : 0;
+    pivot.position.z += d.axis === 'z' ? -d.half : 0;
+    // Start ajar, which reads as a lived-in house rather than a sealed one.
+    pivot.rotation.y += d.swing * (0.35 + Math.random() * 0.5);
+    scene.add(pivot);
+    roomDoors.set(d.id, pivot);
+  }
 
   // --- Hiding spots: almirah bodies and doors, plus a marker for under-spots. ---
   const hidingDoors = new Map<string, THREE.Object3D>();
@@ -202,6 +274,7 @@ export function buildWorld(mansion: Mansion): WorldView {
     keyMesh,
     gateMesh,
     hidingDoors,
+    roomDoors,
     dispose() {
       for (const d of disposables) d.dispose();
     },

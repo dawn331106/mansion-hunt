@@ -136,6 +136,8 @@ async function start(role: Role): Promise<void> {
     }
   }
 
+  audio.startAmbience();
+
   resize();
   input.requestLock();
 
@@ -294,6 +296,34 @@ function tick(s: Session, dt: number): void {
       const victim = s.state.survivors.find((x) => x.id === c.survivorId);
       showToast(s.role === 'ghost' ? `Caught ${victim?.name ?? 'someone'}.` : 'One of them is gone.');
     }
+  }
+
+  /**
+   * Let the house react to the hunt.
+   *
+   * The ambient bed darkens as the ghost closes in, which gives survivors a
+   * sense of danger that is felt rather than displayed — there is no map and
+   * no indicator, so this is the only warning the game offers besides
+   * footsteps. For the ghost it tracks its own nearest quarry instead, so the
+   * music tightens as it closes rather than going flat.
+   */
+  {
+    const g = s.state.ghost;
+    let nearest = Infinity;
+    if (s.role === 'ghost') {
+      for (const v of s.state.survivors) {
+        if (!v.alive || v.escaped || v.hidden) continue;
+        nearest = Math.min(nearest, dist(g.pos.x, g.pos.z, v.pos.x, v.pos.z));
+      }
+    } else {
+      const self = s.state.survivors.find((x) => x.id === s.selfId);
+      if (self && self.alive) nearest = dist(g.pos.x, g.pos.z, self.pos.x, self.pos.z);
+    }
+    // Full dread inside 4m, nothing beyond 22m.
+    const dread = Number.isFinite(nearest)
+      ? Math.max(0, Math.min(1, 1 - (nearest - 4) / 18))
+      : 0;
+    s.audio.setDread(dread);
   }
 
   // --- Spatial audio: move the listener and any live voices. ---

@@ -170,8 +170,15 @@ export function survivorBotIntent(
         const dk = dist(s.pos.x, s.pos.z, state.key.x, state.key.z);
         const sameRoom = roomOf(mansion, s.pos.x, s.pos.z) ===
           roomOf(mansion, state.key.x, state.key.z);
-        const spotted = (sameRoom && dk < 11) ||
-          (dk < 8 && lineOfSight(mansion, s.pos.x, s.pos.z, state.key.x, state.key.z, 0.8));
+        /*
+         * These radii are in metres and have to track the map. When the house
+         * grew from 36x30 to 56x44 the rooms outgrew an 11m "same room"
+         * check, so a bot could stand in the right room and still not see the
+         * key — the key went unfound in half of all matches and the ghost won
+         * two thirds of them for want of an objective.
+         */
+        const spotted = (sameRoom && dk < 16) ||
+          (dk < 11 && lineOfSight(mansion, s.pos.x, s.pos.z, state.key.x, state.key.z, 0.8));
 
         if (spotted) {
           m.target = { x: state.key.x, z: state.key.z };

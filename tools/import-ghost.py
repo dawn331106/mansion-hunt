@@ -79,5 +79,68 @@ def main():
     print(f"wrote {DST}  {OUT}x{OUT}")
 
 
+def build_body(src_path="public/assets/body.png", dst="public/assets/ghost-body.png"):
+    """
+    Turn the supplied body photograph into a texture for the ghost's torso.
+
+    The source is a figure in a pale gown against a dark room. Unlike the face,
+    this one *can* be keyed on luminance: the gown is the brightest thing in
+    the frame by a wide margin and the room behind it is nearly black, so a
+    ramp over the midtones separates them cleanly.
+
+    The result is desaturated toward the same cold grey as the face — a warm
+    photographic tint on the body next to a cold spectral head reads as two
+    different creatures stitched together.
+    """
+    src = Image.open(src_path).convert("RGB")
+    w, h = src.size
+    out_w, out_h = 384, 640
+    img = src.resize((out_w, out_h), Image.LANCZOS).convert("RGBA")
+    px = img.load()
+
+    for y in range(out_h):
+        v = y / out_h
+        for x in range(out_w):
+            r, g, b, _ = px[x, y]
+            lum = 0.299 * r + 0.587 * g + 0.114 * b
+
+            # Desaturate and cool: the source is green-tinted night footage.
+            grey = lum
+            r = int(grey * 0.92 + r * 0.08)
+            g = int(grey * 0.94 + g * 0.06)
+            b = int(grey * 1.02 + b * 0.04)
+            r, g, b = min(255, r), min(255, g), min(255, b)
+
+            # Alpha from luminance: the gown is bright, the room is not.
+            if lum <= 30:
+                a = 0.0
+            elif lum >= 85:
+                a = 1.0
+            else:
+                t = (lum - 30) / 55.0
+                a = t * t * (3 - 2 * t)
+
+            # The room behind the figure is not uniformly dark — a lit window
+            # frame runs up the left and right of the source and survives a
+            # pure luminance key, which left the ghost dragging a rectangle of
+            # wall around with it. The figure occupies the middle of the
+            # frame, so the matte is narrowed toward the centre: bright pixels
+            # out at the edges are architecture, not gown.
+            u = abs(x / out_w - 0.5) * 2
+            body_width = 0.34 + 0.34 * v          # the gown flares downward
+            if u > body_width:
+                a *= max(0.0, 1.0 - (u - body_width) / 0.20)
+            if v > 0.86:
+                a *= max(0.0, 1.0 - (v - 0.86) / 0.14)
+            if v < 0.03:
+                a *= v / 0.03
+
+            px[x, y] = (r, g, b, int(max(0.0, min(1.0, a)) * 255))
+
+    img.save(dst)
+    print(f"wrote {dst}  {out_w}x{out_h}")
+
+
 if __name__ == "__main__":
     main()
+    build_body()
