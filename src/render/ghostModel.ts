@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { loadGhostModel, type LoadedGhost } from './ghostGltf.js';
 
 /**
  * The ghost: a real body, animated, with the artwork mapped onto it.
@@ -214,6 +215,26 @@ function headMaterial(
 
 export function createGhost(): GhostModel {
   const group = new THREE.Object3D();
+
+  /**
+   * A modelled ghost takes over if one is present.
+   *
+   * Everything below stays as the fallback, because the load is asynchronous
+   * and may fail — the game has to have a ghost from the first frame, and it
+   * has to keep having one if `public/assets/ghost.glb` is missing. When the
+   * model does arrive it is swapped in and the procedural figure is hidden;
+   * the interface the renderer sees does not change either way.
+   */
+  let loaded: LoadedGhost | null = null;
+  const procedural = new THREE.Object3D();
+  group.add(procedural);
+
+  void loadGhostModel().then((m) => {
+    if (!m) return;
+    loaded = m;
+    procedural.visible = false;
+    group.add(m.object);
+  });
   const disposables: { dispose(): void }[] = [];
   const track = <T extends { dispose(): void }>(o: T): T => { disposables.push(o); return o; };
 
@@ -265,7 +286,7 @@ export function createGhost(): GhostModel {
 
   // Body parts hang off a torso pivot, so the lunge moves everything at once.
   const body = new THREE.Object3D();
-  group.add(body);
+  procedural.add(body);
 
   /**
    * The body: the supplied photograph on a curved, solid panel.
@@ -467,7 +488,7 @@ export function createGhost(): GhostModel {
   //     dark wall and so survivors get a half-second of warning. ---
   const glow = new THREE.PointLight(0xa04444, 6.0, 6.0, 1.7);
   glow.position.y = 0.8;
-  group.add(glow);
+  group.add(glow);  // the glow serves both
 
   let presence = 1;
   let lunge = 0;
@@ -524,11 +545,15 @@ export function createGhost(): GhostModel {
     setPresence(v) { presence = clamp(v, 0, 1); },
     setLunge(v) { lunge = clamp(v, 0, 1); u.uLunge.value = lunge; },
     headWorldY() {
+      if (loaded) return loaded.headWorldY();
       const v = new THREE.Vector3();
       face.getWorldPosition(v);
       return v.y;
     },
-    dispose() { for (const d of disposables) d.dispose(); },
+    dispose() {
+      loaded?.dispose();
+      for (const d of disposables) d.dispose();
+    },
   };
 }
 

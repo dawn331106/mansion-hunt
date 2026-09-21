@@ -38,3 +38,51 @@ gown flares, so bright pixels out at the edges are treated as architecture.
 To swap either piece of art, replace the source and re-run the script;
 `GHOST_TEXTURE_URL` and `GHOST_BODY_URL` in `src/render/ghostModel.ts` already
 point at the outputs.
+
+## ghost.glb — a modelled ghost (optional, and the better path)
+
+Drop a rigged humanoid `.glb` here as `ghost.glb` and it replaces the
+procedural figure automatically. Nothing else needs changing: the loader
+scales it to 1.78m wherever the artist left it, stands its feet on the floor,
+finds the head bone so the jumpscare can frame the face, and picks animation
+clips by name.
+
+This exists because four attempts at sculpting a convincing face out of
+procedural geometry each got closer and none were good. A head is a lot of
+specific irregular detail, and displacement functions are a poor way to author
+it — every correction to the brow moved the cheekbones.
+
+### What to look for
+
+A **rigged humanoid** in glTF binary format. Useful sources:
+
+- **Mixamo** (free, Adobe account) — characters plus a large animation
+  library. Download the character, then download `Walk`, `Running`, `Zombie
+  Scream` and `Idle` onto it. Export as FBX and convert, or use a glTF export
+  if offered.
+- **Sketchfab** — filter by *Downloadable* and *glTF*, and check the licence.
+  Search "ghost", "wraith", "zombie woman", "horror character".
+- **Quaternius** — CC0, low-poly, no attribution required.
+
+Anything under about 50k triangles is plenty; this is a dark house and the
+silhouette does most of the work.
+
+### Animation clips
+
+Clips are matched on substrings of their names, so most naming conventions
+work without renaming anything:
+
+| Action | Matched on |
+| --- | --- |
+| idle | idle, breathing, stand, tpose, rest |
+| walk | walk, shamble, limp, creep, stalk |
+| chase | run, sprint, chase, charge |
+| attack | attack, scream, roar, yell, lunge, strike, kill |
+
+A model with only one clip works — every missing action falls back to whatever
+the file has, because a ghost walking on its idle animation still reads far
+better than one sliding along frozen. A model with no clips at all works too;
+it simply does not animate.
+
+The clip is chosen from measured movement speed rather than from a flag, so
+the legs always match what is happening on screen.
