@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>The House</title>
+<style>
+  :root {
+    --ink: #e8e4de;
+    --dim: #8b8680;
+    --blood: #8b1a1a;
+    --bg: #07070a;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  #gl, #hud {
+    position: fixed;
+    inset: 0;
+    display: block;
+  }
+  #gl { z-index: 1; cursor: none; }
+  /* The HUD must never eat the click that grabs pointer lock. */
+  #hud { z-index: 2; pointer-events: none; }
+
+  .overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    background:
+      radial-gradient(ellipse at 50% 35%, rgba(40,18,18,0.55), transparent 62%),
+      rgba(5,5,8,0.94);
+    text-align: center;
+    padding: 24px;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(34px, 7vw, 62px);
+    font-weight: 300;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    text-shadow: 0 0 34px rgba(139,26,26,0.55);
+  }
+
+  .tagline {
+    margin: -10px 0 6px;
+    color: var(--dim);
+    font-size: 14px;
+    letter-spacing: 0.08em;
+    max-width: 30em;
+    line-height: 1.6;
+  }
+
+  .roles { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+
+  button {
+    font: inherit;
+    font-size: 15px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.18);
+    padding: 16px 30px;
+    cursor: pointer;
+    transition: background 0.18s, border-color 0.18s, transform 0.18s;
+  }
+  button:hover {
+    background: rgba(139,26,26,0.22);
+    border-color: rgba(139,26,26,0.7);
+    transform: translateY(-1px);
+  }
+  button .sub {
+    display: block;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: none;
+    color: var(--dim);
+    margin-top: 6px;
+  }
+
+  .settings {
+    display: flex;
+    gap: 22px;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+    color: var(--dim);
+    font-size: 13px;
+  }
+  select {
+    font: inherit;
+    background: rgba(255,255,255,0.05);
+    color: var(--ink);
+    border: 1px solid rgba(255,255,255,0.15);
+    padding: 5px 8px;
+  }
+  label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+
+  .controls {
+    color: var(--dim);
+    font-size: 12px;
+    line-height: 1.9;
+    letter-spacing: 0.03em;
+  }
+  .controls kbd {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+  }
+
+  #paused {
+    display: none;
+    z-index: 9;
+    cursor: pointer;
+    background: rgba(4,4,7,0.72);
+  }
+  #paused p { color: var(--dim); letter-spacing: 0.14em; text-transform: uppercase; font-size: 13px; }
+
+  #end { display: none; }
+  #end-title { font-size: clamp(30px, 6vw, 54px); }
+  #end-title.win  { color: #a8d8b0; text-shadow: 0 0 30px rgba(120,200,140,0.4); }
+  #end-title.lose { color: #d87070; text-shadow: 0 0 30px rgba(180,50,50,0.5); }
+  #end-reason { color: var(--dim); font-size: 15px; font-style: italic; max-width: 26em; }
+
+  .warning {
+    color: #7a5555;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    max-width: 28em;
+    line-height: 1.7;
+    border-top: 1px solid rgba(255,255,255,0.07);
+    padding-top: 14px;
+    margin-top: 4px;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="gl"></canvas>
+<canvas id="hud"></canvas>
+
+<div id="menu" class="overlay">
+  <h1>The House</h1>
+  <p class="tagline">
+    Find the key. Reach the gate. Something else is already inside, and it knows
+    where you were thirty seconds ago.
+  </p>
+
+  <div class="roles">
+    <button id="play-survivor">
+      Play as survivor
+      <span class="sub">hide, run, and get out</span>
+    </button>
+    <button id="play-ghost">
+      Play as the ghost
+      <span class="sub">hunt them down, one by one</span>
+    </button>
+  </div>
+
+  <div class="settings">
+    <label>
+      Survivors
+      <select id="survivor-count">
+        <option value="2">2</option>
+        <option value="3" selected>3</option>
+        <option value="4">4</option>
+        <option value="5">5</option>
+      </select>
+    </label>
+    <label>
+      <input type="checkbox" id="use-mic" />
+      Use microphone (ghost voice)
+    </label>
+  </div>
+
+  <div class="controls">
+    <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;·&nbsp;
+    <kbd>Shift</kbd> sprint &nbsp;·&nbsp;
+    <kbd>Ctrl</kbd> crouch<br />
+    <kbd>E</kbd> interact, hide, take the key &nbsp;·&nbsp;
+    <kbd>Space</kbd> catch (ghost only)<br />
+    <kbd>Esc</kbd> release the mouse
+  </div>
+
+  <p class="warning">
+    Contains sudden loud noises, flashing imagery and jump scares.
+    Headphones are strongly recommended — sound is how you find each other,
+    and there is no map.
+  </p>
+</div>
+
+<div id="paused" class="overlay">
+  <p>click to resume</p>
+</div>
+
+<div id="end" class="overlay">
+  <h1 id="end-title">You lose</h1>
+  <p id="end-reason"></p>
+  <button id="play-again">Again</button>
+</div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
