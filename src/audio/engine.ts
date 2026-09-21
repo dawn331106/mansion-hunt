@@ -1,6 +1,7 @@
 import { AUDIO } from '../game/config.js';
 import { Ambience } from './ambience.js';
 import { createGhostVoice, ensureGhostWorklet, type GhostVoiceChain } from './ghostVoice.js';
+import { pickTaunt, speakTaunt, type Taunt } from './taunts.js';
 
 /**
  * The world's ears.
@@ -13,6 +14,9 @@ import { createGhostVoice, ensureGhostWorklet, type GhostVoiceChain } from './gh
  * With no minimap, this is the primary way a player knows anything about where
  * other people are. It is a navigation instrument, not decoration.
  */
+
+/** Where a taunt comes from, vertically: roughly the ghost's mouth. */
+const GHOST_MOUTH_HEIGHT = 1.75;
 
 export class AudioEngine {
   readonly ctx: AudioContext;
@@ -34,6 +38,11 @@ export class AudioEngine {
 
   /** The house's own voice: drone, wind, creaks. Started on resume. */
   private ambience: Ambience | null = null;
+
+  /** Sim time the ghost may next speak, so lines never overlap. */
+  private tauntFreeAt = 0;
+  /** The last line spoken, so it is not immediately repeated. */
+  private lastTaunt: string | null = null;
 
   constructor() {
     this.ctx = new AudioContext();
@@ -176,6 +185,60 @@ export class AudioEngine {
     v.gain.disconnect();
     v.panner.disconnect();
     this.voices.delete(id);
+  }
+
+  /**
+   * The ghost says something, from where the ghost is standing.
+   *
+   * Routed through a panner exactly like a footstep, so proximity and
+   * direction come out of the listener's position rather than a hand-written
+   * volume curve — near is loud and placed, far is faint and vague, and it
+   * fades to nothing past the same range a shout would.
+   *
+   * Returns the subtitle if the line will actually be audible from where the
+   * listener is standing, so the HUD never captions something you cannot hear.
+   */
+  taunt(
+    now: number,
+    x: number,
+    z: number,
+    mood: Taunt['mood'],
+    listenerDist: number,
+  ): string | null {
+    if (now < this.tauntFreeAt) return null;
+    if (listenerDist > AUDIO.tauntMaxDistance) {
+      /*
+       * Out of earshot. Retry soon rather than sitting out the full gap.
+       *
+       * Burning the whole interval here meant that in a house forty metres
+       * across the ghost spent nearly every cycle talking to an empty room,
+       * and by the time it was close enough to hear it was mid-cooldown. A
+       * short retry keeps it from stockpiling lines while still letting it
+       * speak promptly once someone is near enough to be frightened.
+       */
+      this.tauntFreeAt = now + 1.2;
+      return null;
+    }
+
+    const line = pickTaunt(mood, this.lastTaunt);
+    this.lastTaunt = line.text;
+
+    const panner = this.makePanner(AUDIO.tauntRefDistance, AUDIO.tauntMaxDistance);
+    this.positionPanner(panner, x, GHOST_MOUTH_HEIGHT, z);
+    panner.connect(this.world);
+
+    // Closer means a heavier, rougher voice as well as a louder one.
+    const intensity = 1 - Math.min(1, listenerDist / AUDIO.tauntMaxDistance);
+    const seconds = speakTaunt(this.ctx, panner, line, 0.45 + intensity * 0.5);
+    setTimeout(() => panner.disconnect(), (seconds + 1.5) * 1000);
+
+    this.tauntFreeAt = now + seconds + 0.8;
+    return line.text;
+  }
+
+  /** How long the ghost is still speaking for, in seconds. */
+  tauntBusyFor(now: number): number {
+    return Math.max(0, this.tauntFreeAt - now);
   }
 
   /** A non-positional stinger: the jumpscare, the key pickup, the pulse. */

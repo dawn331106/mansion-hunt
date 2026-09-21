@@ -71,120 +71,6 @@ interface Spectral {
 }
 
 /**
- * The body shader.
- *
- * One material serves every part, with `uHasMap` selecting whether it samples
- * the artwork. Fresnel brightens the silhouette edge and hollows the middle,
- * which is what makes the form read as a shell rather than a solid — and the
- * vertical dissolve means the ghost never quite meets the floor.
- */
-function spectralMaterial(u: Spectral, opts: { dissolveFrom: number; useMap: boolean }): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
-    uniforms: u as unknown as Record<string, THREE.IUniform>,
-    transparent: true,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-    blending: THREE.NormalBlending,
-    defines: { USE_MAP_TEX: opts.useMap ? 1 : 0 },
-    vertexShader: `
-      uniform float uTime;
-      varying vec3 vNormal;
-      varying vec3 vView;
-      varying vec2 vUv;
-      varying float vLocalY;
-
-      void main() {
-        vUv = uv;
-        vLocalY = position.y;
-
-        // A slow, organic sway. Amplitude grows toward the hem, so the top of
-        // the body stays readable while the bottom moves like cloth.
-        vec3 p = position;
-        float amp = max(0.0, -position.y) * 0.10 + 0.012;
-        p.x += sin(uTime * 1.25 + position.y * 2.6) * amp;
-        p.z += cos(uTime * 0.95 + position.y * 2.1) * amp;
-
-        vNormal = normalize(normalMatrix * normal);
-        vec4 mv = modelViewMatrix * vec4(p, 1.0);
-        vView = normalize(-mv.xyz);
-        gl_Position = projectionMatrix * mv;
-      }
-    `,
-    fragmentShader: `
-      uniform float uTime;
-      uniform float uPresence;
-      uniform float uLunge;
-      uniform vec3 uColor;
-      uniform vec3 uDeep;
-      uniform sampler2D uMap;
-      uniform float uHasMap;
-      varying vec3 vNormal;
-      varying vec3 vView;
-      varying vec2 vUv;
-      varying float vLocalY;
-
-      void main() {
-        float fres = pow(1.0 - abs(dot(normalize(vNormal), normalize(vView))), 2.0);
-
-        /*
-         * Dark body, bright edge.
-         *
-         * The body first rendered as a pale milky solid, which fought the
-         * face for attention and made the whole figure read as a lamp rather
-         * than a shroud. Keeping the interior nearly black and putting all
-         * the light in the fresnel rim means the eye goes to the face, and
-         * the silhouette still separates from a dark wall.
-         */
-        vec3 col = mix(uDeep, uColor, fres * fres);
-        float alpha = 0.06 + fres * 0.62;
-
-        #if USE_MAP_TEX
-          if (uHasMap > 0.5) {
-            vec4 tex = texture2D(uMap, vUv);
-            /*
-             * The artwork is the face: show it, do not tint it.
-             *
-             * This first multiplied the texture by the spectral colour and
-             * faded it by fresnel, which in a house lit this dimly left the
-             * face a barely-visible smudge — all the work of drawing it was
-             * thrown away by the shader. The artwork now passes through at
-             * full strength and is lifted a little at the silhouette, so it
-             * reads across a room while still belonging to the body.
-             */
-            // uLunge lifts the face during a jumpscare. The house is lit at
-            // the edge of visibility by design, which is right for hunting
-            // and wrong for the one shot where the art has to be legible.
-            /*
-             * Sit the face on the body rather than in front of it.
-             *
-             * A flat 1.25x brightness made the face a lit cut-out floating
-             * over a dark gown — the give-away that it was a texture on a
-             * plane. Darkening it toward the silhouette lets it fall into the
-             * same shadow the body is in, and the vertical gradient means the
-             * jaw is dimmer than the brow, as it would be under the house's
-             * overhead light.
-             */
-            float shade = 1.05 + fres * 0.30 + (1.0 - vUv.y) * -0.14;
-            col = tex.rgb * (shade + uLunge * 2.2);
-            alpha = tex.a * (0.94 + fres * 0.06);
-            // Skip the dissolve and ripple below: the face is not cloth.
-            gl_FragColor = vec4(col, alpha * uPresence);
-            return;
-          }
-        #endif
-
-        // Dissolve below the cut-off, so the lower body trails into nothing.
-        float dissolve = smoothstep(${opts.dissolveFrom.toFixed(2)}, ${(opts.dissolveFrom + 0.55).toFixed(2)}, vLocalY);
-        // A travelling ripple, so no surface is ever perfectly still.
-        float ripple = 0.86 + 0.14 * sin(vLocalY * 14.0 - uTime * 2.6);
-
-        gl_FragColor = vec4(col, alpha * dissolve * ripple * uPresence);
-      }
-    `,
-  });
-}
-
-/**
  * The material for the photographed body.
  *
  * Deliberately simpler than the face and cloth shader: the artwork is already
@@ -234,6 +120,93 @@ function bodyMaterial(
         // Dissolve the last of the hem into the floor.
         float hem = smoothstep(0.0, 0.16, vY);
         gl_FragColor = vec4(col, tex.a * hem * uPresence);
+      }
+    `,
+  });
+}
+
+/**
+ * The head's material.
+ *
+ * Unlike the old face plane, this shades: a light direction gives the skull
+ * form, so the brow catches the light and the far cheek falls away, and the
+ * artwork is modulated by that shading instead of being pasted on flat. The
+ * `aFront` attribute fades the texture out around the sides, so the face
+ * belongs to the front of the head and the back is bare bone-dark.
+ */
+function headMaterial(
+  u: Spectral, tex: THREE.Texture | null, ready: { value: number },
+): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uMap: { value: tex },
+      uReady: ready as unknown as THREE.IUniform,
+      uPresence: u.uPresence,
+      uLunge: u.uLunge,
+      uTime: u.uTime,
+    },
+    transparent: true,
+    // Depth-write is ON here, unlike every other part of this model. The head
+    // is a closed solid, so it can and should occlude itself — that is what
+    // stops the back of the skull showing through the face.
+    depthWrite: true,
+    side: THREE.FrontSide,
+    vertexShader: `
+      attribute float aFront;
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vView;
+      varying float vFront;
+      varying float vY;
+      void main() {
+        vUv = uv;
+        vFront = aFront;
+        vY = uv.y;
+        vNormal = normalize(normalMatrix * normal);
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vView = normalize(-mv.xyz);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D uMap;
+      uniform float uReady;
+      uniform float uPresence;
+      uniform float uLunge;
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vView;
+      varying float vFront;
+      varying float vY;
+
+      void main() {
+        vec3 n = normalize(vNormal);
+
+        // A key light from above and slightly to the side, so the skull has
+        // form of its own rather than relying on the room to model it.
+        vec3 L = normalize(vec3(-0.35, 0.82, 0.45));
+        float diff = clamp(dot(n, L) * 0.5 + 0.5, 0.0, 1.0);
+        // Fresnel picks out the silhouette, which is most of what you see of
+        // a head in a dark room.
+        float fres = pow(1.0 - abs(dot(n, normalize(vView))), 2.2);
+
+        // Bare skull: cold, dark, faintly lit at the rim.
+        vec3 bone = mix(vec3(0.045, 0.050, 0.058), vec3(0.34, 0.36, 0.38), diff);
+        bone += fres * 0.22;
+
+        vec3 col = bone;
+        if (uReady > 0.5 && vFront > 0.02) {
+          vec4 tex = texture2D(uMap, vUv);
+          // Blend the artwork in over the front, fading around the sides so
+          // there is no hard edge where the projection stops.
+          float w = smoothstep(0.10, 0.55, vFront) * tex.a;
+          // The artwork is already painted with its own light; this keeps a
+          // little of the geometric shading so it turns with the head.
+          vec3 lit = tex.rgb * (0.72 + diff * 0.55 + uLunge * 2.0);
+          col = mix(bone, lit, w);
+        }
+
+        gl_FragColor = vec4(col, uPresence);
       }
     `,
   });
@@ -359,68 +332,110 @@ export function createGhost(): GhostModel {
   headGroup.position.y = 0.92;
   body.add(headGroup);
 
-  /*
-   * There is no head sphere.
+  /**
+   * The head: a real skull, with the artwork wrapped over its front.
    *
-   * One used to sit behind the face plane to give the skull volume, and it
-   * was the single most artificial thing in the model: a hard black disc
-   * covering most of the face. Switching it to `BackSide` did not help, and
-   * neither did render order — with `depthWrite` off on every part, the
-   * camera simply sees the inside of the sphere's far wall straight through
-   * the transparent near one.
+   * Two earlier attempts failed in instructive ways. A sphere behind a flat
+   * face plane rendered as a hard black disc, because with `depthWrite` off
+   * the camera sees the inside of the sphere's far wall through the near one.
+   * Removing the sphere fixed the disc but left the face a picture hanging in
+   * the air — a bowed plane is still a plane, and at 10cm of bulge across a
+   * 62cm face there is nothing for the light to model.
    *
-   * The face plane is already bowed into a dome, so it carries its own
-   * volume. Nothing needs to be behind it.
+   * So the head is now built as a solid of revolution — a proper cranium
+   * profile, narrow at the crown, widest at the temples, tapering to a jaw —
+   * and the face texture is projected onto its front hemisphere. The same
+   * mesh carries both, so there is no seam to see and nothing to sit in front
+   * of anything else. It shades like a head because it is one: turn it and
+   * the cheek catches the light, the far side falls into shadow, and the
+   * silhouette against a lit doorway is a skull rather than a rectangle.
    */
+  const headGeo = (() => {
+    const profile: THREE.Vector2[] = [];
+    const N = 22;
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      // y runs from the crown (+0.21) down to under the jaw (-0.23).
+      const y = 0.21 - t * 0.44;
+      let r: number;
+      if (t < 0.14) {
+        // The dome of the skull: a circular arc, not a cone.
+        r = 0.175 * Math.sqrt(Math.max(0, 1 - ((0.14 - t) / 0.15) ** 2));
+      } else if (t < 0.46) {
+        // Temples, the widest part of a head.
+        r = 0.175 + 0.012 * Math.sin(((t - 0.14) / 0.32) * Math.PI);
+      } else if (t < 0.74) {
+        // Cheekbones, drawing in.
+        r = 0.187 - 0.045 * ((t - 0.46) / 0.28);
+      } else {
+        // The jaw, tapering to the chin.
+        r = 0.142 - 0.105 * ((t - 0.74) / 0.26) ** 1.5;
+      }
+      profile.push(new THREE.Vector2(Math.max(0.012, r), y));
+    }
+    const g = new THREE.LatheGeometry(profile, 28);
 
-  /**
-   * The face plate: where the artwork lands.
-   *
-   * A slightly curved plane sitting just proud of the head sphere, so the
-   * image sits on a face rather than floating. It is a child of the head, so
-   * it turns with the body and is genuinely absent when the ghost faces away
-   * — which is what makes turning around and finding it there work at all.
-   */
-  /**
-   * The face is a gently curved plane, not a patch of the head sphere.
-   *
-   * A `SphereGeometry` patch was the obvious choice and it was wrong twice
-   * over. Its phi range put the face on the side of the head rather than the
-   * front, and — less obviously — a patch inherits its slice of the sphere's
-   * global UV map, so the texture was sampled through a narrow band instead
-   * of across its whole width. The result was a blank grey head.
-   *
-   * A plane owns a clean 0..1 UV square, so the artwork lands exactly as
-   * drawn. Bowing it forward at the centre keeps it sitting on a face rather
-   * than floating in front of one.
-   */
-  const faceGeo = track(new THREE.PlaneGeometry(0.62, 0.72, 12, 14));
-  {
-    const pos = faceGeo.attributes.position;
+    /*
+     * Project the face texture onto the front of the skull.
+     *
+     * A lathe's own UVs wrap all the way around, which would smear the face
+     * across the back of the head. These are planar coordinates taken from x
+     * and y, so the artwork lands on the front exactly as drawn, and the
+     * `vFront` attribute lets the shader fade it out around the sides rather
+     * than letting it wrap.
+     */
+    const pos = g.attributes.position;
+    const uv = new Float32Array(pos.count * 2);
+    const front = new Float32Array(pos.count);
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
       const y = pos.getY(i);
-      // Push the middle of the plane out into a shallow dome.
-      const bulge = Math.cos((x / 0.31) * Math.PI * 0.5) * Math.cos((y / 0.36) * Math.PI * 0.5);
-      pos.setZ(i, Math.max(0, bulge) * 0.10);
+      const z = pos.getZ(i);
+      /*
+       * Planar projection, corrected for the head's actual extents.
+       *
+       * Dividing x by a guessed width smears the artwork: the skull is only
+       * about 0.19 wide at the temples, so x/0.42 sampled the middle third of
+       * the texture and stretched it over the whole face. Mapping x across
+       * the true half-width, and y across the true crown-to-chin span, lands
+       * the eyes on the eyes.
+       */
+      /*
+       * Cylindrical projection, measured from the head's true front.
+       *
+       * Three separate attempts at a planar x/y mapping all smeared the face
+       * into one cheek, and the reason was not the divisor: `LatheGeometry`
+       * begins its sweep at +Z and rotates toward +X, so "front" in the
+       * projection was ninety degrees away from the front of the model. The
+       * angle around the axis is the honest coordinate here — it says exactly
+       * how far round the skull a vertex sits, so the artwork wraps the front
+       * hemisphere evenly and stops where the cheeks turn away.
+       */
+      const ang = Math.atan2(x, z);            // 0 at the front, ±PI behind
+      /*
+       * The face occupies the front ~100 degrees of the skull.
+       *
+       * Spreading it over 150 wrapped the artwork's edges round onto the
+       * cheeks and squashed the features toward the middle. A real face sits
+       * on the front of a head and stops at the temples, so the projection
+       * should too — everything past that is bare bone.
+       */
+      const spread = Math.PI * 0.56;
+      uv[i * 2] = ang / spread + 0.5;
+      uv[i * 2 + 1] = (y + 0.230) / (0.210 + 0.230);
+
+      // 1 on the front of the head, falling to 0 at the sides and behind.
+      front[i] = Math.max(0, Math.cos(ang));
     }
-    pos.needsUpdate = true;
-    faceGeo.computeVertexNormals();
-  }
-  const faceMat = track(spectralMaterial(u, { dissolveFrom: -1.0, useMap: true }));
-  const face = new THREE.Mesh(faceGeo, faceMat);
-  /*
-   * Draw the face last.
-   *
-   * Every part of this model has `depthWrite: false`, so depth testing cannot
-   * order them and three.js falls back on scene order — which put the dark
-   * head and neck shells on top of the face and left a black disc over it.
-   * An explicit render order is the only thing that guarantees the face is
-   * painted over its own skull rather than under it.
-   */
-  face.renderOrder = 10;
-  // Sit just proud of the head sphere, facing the model's forward (+Z).
-  face.position.set(0, 0.04, 0.21);
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setAttribute('aFront', new THREE.BufferAttribute(front, 1));
+    g.computeVertexNormals();
+    return track(g);
+  })();
+
+  const faceMat = track(headMaterial(u, texture, faceReady));
+  const face = new THREE.Mesh(headGeo, faceMat);
+  face.position.set(0, 0.02, 0);
   headGroup.add(face);
 
   // --- The eyes. Drawn while the face is still procedural; hidden once the
@@ -474,12 +489,19 @@ export function createGhost(): GhostModel {
       // --- The head tracks the camera slightly, independently of the body.
       //     A ghost whose head is already turned toward you when you round a
       //     corner is far worse than one that has to turn. ---
-      const toCam = Math.atan2(
-        camera.position.x - group.position.x,
-        camera.position.z - group.position.z,
-      );
-      const rel = wrapAngle(toCam - group.rotation.y);
-      headGroup.rotation.y = clamp(rel, -0.7, 0.7) * (0.35 + lunge * 0.65);
+      /*
+       * Turn the head toward the camera, in the body's own frame.
+       *
+       * This subtracted a world angle from `group.rotation.y`, which is the
+       * sim's yaw after conversion — two different conventions, so the result
+       * was a meaningless offset that swung the head up to forty degrees off
+       * and left the face pointing at a wall. Transforming the camera into
+       * the group's local space asks the question directly: which way is the
+       * camera, from where the body is facing?
+       */
+      const local = group.worldToLocal(camera.position.clone());
+      const rel = Math.atan2(local.x, local.z);
+      headGroup.rotation.y = clamp(rel, -0.45, 0.45) * (0.22 + lunge * 0.55);
       // Once the artwork is in, it supplies the eyes; drop the stand-ins.
       eyes.visible = faceReady.value < 0.5;
       headGroup.rotation.x = Math.sin(time * 0.8) * 0.05 - lunge * 0.22;
@@ -514,9 +536,3 @@ function clamp(x: number, lo: number, hi: number): number {
   return x < lo ? lo : x > hi ? hi : x;
 }
 
-function wrapAngle(a: number): number {
-  let d = a % (Math.PI * 2);
-  if (d > Math.PI) d -= Math.PI * 2;
-  if (d < -Math.PI) d += Math.PI * 2;
-  return d;
-}

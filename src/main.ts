@@ -36,6 +36,8 @@ interface Session {
   hud: Hud;
   audio: AudioEngine;
   toast: { text: string; until: number } | null;
+  /** What the ghost is saying right now, shown while it is audible. */
+  subtitle: { text: string; until: number } | null;
   /** Local microphone, if the player has granted it. */
   mic: MediaStream | null;
 }
@@ -117,7 +119,10 @@ async function start(role: Role): Promise<void> {
     pausedNote.style.display = locked ? 'none' : 'flex';
   };
 
-  session = { state, role, selfId, input, renderer, hud, audio, toast: null, mic: null };
+  session = {
+    state, role, selfId, input, renderer, hud, audio,
+    toast: null, subtitle: null, mic: null,
+  };
 
   // --- Microphone. Only the ghost's voice is transformed, but a survivor's
   //     mic is still worth opening so the loopback can be tested locally. ---
@@ -145,6 +150,8 @@ async function start(role: Role): Promise<void> {
   accumulator = 0;
   clock = 0;
   endAt = null;
+  // The ghost holds its tongue until the head start is over.
+  nextTauntAt = 6;
   rafId = requestAnimationFrame(frame);
 }
 
@@ -153,6 +160,8 @@ async function start(role: Role): Promise<void> {
 let last = 0;
 let accumulator = 0;
 let clock = 0;
+/** Sim time the ghost may next say something. */
+let nextTauntAt = 0;
 /** When the end screen may appear, once the scare has had its moment. */
 let endAt: number | null = null;
 
@@ -208,6 +217,7 @@ function frame(now: number): void {
     self,
     prompt: promptFor(s),
     toast: s.toast,
+    subtitle: s.subtitle,
     catchReady: s.role === 'ghost' && s.state.time - s.state.ghost.lastCatchAt >= GHOST.catchCooldown,
   };
   s.hud.draw(s.state, hudState, window.innerWidth, window.innerHeight);
@@ -352,6 +362,43 @@ function tick(s: Session, dt: number): void {
       ? Math.max(0, Math.min(1, 1 - (nearest - 4) / 18))
       : 0;
     s.audio.setDread(dread);
+  }
+
+  /**
+   * The ghost talks while it hunts.
+   *
+   * Driven from the same information the audio already has — where the ghost
+   * is and how far away the listener is — so it behaves exactly like a
+   * footstep: placed in space, louder and rougher when near, inaudible far
+   * off. What it says depends on what it is doing, which makes the line
+   * itself a piece of information rather than just noise.
+   *
+   * It is silent while a scare is running; the roar owns that moment.
+   */
+  if (!s.renderer.jumpscare.active) {
+    const g = s.state.ghost;
+    const listenDist = dist(listener.x, listener.z, g.pos.x, g.pos.z);
+
+    const chasing = s.state.time - g.lastSawAt <= GHOST.chaseMemory;
+    const mood = chasing ? 'spotted'
+      : listenDist < 9 ? 'close'
+      : s.state.key.taken || s.state.survivors.some((v) => !v.alive) ? 'gloat'
+      : 'hunting';
+
+    // Speak more often when close and during a chase; rarely when idling far
+    // away, or the ghost becomes a chatterbox rather than a presence.
+    // Out of earshot the engine retries quickly on its own, so this gap only
+    // governs how often the ghost speaks when someone can actually hear it.
+    const gap = chasing ? 4.5 : listenDist < 12 ? 6 : 9;
+    if (s.state.time >= nextTauntAt && s.audio.tauntBusyFor(s.state.time) === 0) {
+      const said = s.audio.taunt(s.state.time, g.pos.x, g.pos.z, mood, listenDist);
+      // Only spend the full interval on a line someone actually heard. Out of
+      // earshot the engine has already set a short retry of its own.
+      nextTauntAt = said
+        ? s.state.time + gap + Math.random() * gap * 0.7
+        : s.state.time + 1.2;
+      if (said) s.subtitle = { text: said, until: s.state.time + 4.0 };
+    }
   }
 
   // --- Spatial audio: move the listener and any live voices. ---
