@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { loadGhostModel, type LoadedGhost } from './ghostGltf.js';
 
 /**
  * The ghost: a real body, animated, with the artwork mapped onto it.
@@ -215,26 +214,6 @@ function headMaterial(
 
 export function createGhost(): GhostModel {
   const group = new THREE.Object3D();
-
-  /**
-   * A modelled ghost takes over if one is present.
-   *
-   * Everything below stays as the fallback, because the load is asynchronous
-   * and may fail — the game has to have a ghost from the first frame, and it
-   * has to keep having one if `public/assets/ghost.glb` is missing. When the
-   * model does arrive it is swapped in and the procedural figure is hidden;
-   * the interface the renderer sees does not change either way.
-   */
-  let loaded: LoadedGhost | null = null;
-  const procedural = new THREE.Object3D();
-  group.add(procedural);
-
-  void loadGhostModel().then((m) => {
-    if (!m) return;
-    loaded = m;
-    procedural.visible = false;
-    group.add(m.object);
-  });
   const disposables: { dispose(): void }[] = [];
   const track = <T extends { dispose(): void }>(o: T): T => { disposables.push(o); return o; };
 
@@ -286,7 +265,7 @@ export function createGhost(): GhostModel {
 
   // Body parts hang off a torso pivot, so the lunge moves everything at once.
   const body = new THREE.Object3D();
-  procedural.add(body);
+  group.add(body);
 
   /**
    * The body: the supplied photograph on a curved, solid panel.
@@ -488,49 +467,15 @@ export function createGhost(): GhostModel {
   //     dark wall and so survivors get a half-second of warning. ---
   const glow = new THREE.PointLight(0xa04444, 6.0, 6.0, 1.7);
   glow.position.y = 0.8;
-  group.add(glow);  // the glow serves both
+  group.add(glow);
 
   let presence = 1;
   let lunge = 0;
-  /** Last position, for measuring how fast the loaded model is travelling. */
-  let lastGX = 0;
-  let lastGZ = 0;
 
   return {
     object: group,
 
     update(_dt, time, camera) {
-      /*
-       * A loaded model owns the frame.
-       *
-       * This early return was missing, so `loaded.update` was never called:
-       * the model was added to the scene and rendered, but its animation
-       * mixer never advanced, leaving the skinned mesh frozen in its bind
-       * pose. The jumpscare showed a figure standing with its arms straight
-       * out, which is the least frightening thing available.
-       */
-      if (loaded) {
-        loaded.update(_dt);
-        loaded.setPresence(presence);
-        loaded.setLunge(lunge);
-
-        /*
-         * Pick the clip from measured movement rather than from a flag, so
-         * the legs always match what is on screen.
-         */
-        const dx = group.position.x - lastGX;
-        const dz = group.position.z - lastGZ;
-        const spd = _dt > 1e-4 ? Math.hypot(dx, dz) / _dt : 0;
-        lastGX = group.position.x;
-        lastGZ = group.position.z;
-        loaded.setAction(
-          lunge > 0.15 ? 'attack' : spd > 3.6 ? 'chase' : spd > 0.35 ? 'walk' : 'idle',
-        );
-
-        glow.intensity = presence * (4.0 + Math.sin(time * 4.1) * 1.0 + lunge * 15);
-        return;
-      }
-
       u.uTime.value = time;
       u.uPresence.value = presence;
 
@@ -579,15 +524,11 @@ export function createGhost(): GhostModel {
     setPresence(v) { presence = clamp(v, 0, 1); },
     setLunge(v) { lunge = clamp(v, 0, 1); u.uLunge.value = lunge; },
     headWorldY() {
-      if (loaded) return loaded.headWorldY();
       const v = new THREE.Vector3();
       face.getWorldPosition(v);
       return v.y;
     },
-    dispose() {
-      loaded?.dispose();
-      for (const d of disposables) d.dispose();
-    },
+    dispose() { for (const d of disposables) d.dispose(); },
   };
 }
 
