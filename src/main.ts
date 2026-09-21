@@ -942,6 +942,40 @@ function resize(): void {
   get role() { return session?.role ?? null; },
   get net() { return session?.net ?? null; },
   get locked() { return session?.input.isLocked ?? false; },
+  /** Every material under the ghost, with the uniforms that can hide it. */
+  ghostMaterials() {
+    if (!session) return null;
+    const o = (session.renderer as unknown as { ghostModel: { object: { traverse(f: (n: unknown) => void): void } } }).ghostModel.object;
+    const out: unknown[] = [];
+    o.traverse((n: unknown) => {
+      const node = n as {
+        type?: string; visible?: boolean; name?: string;
+        material?: { uniforms?: Record<string, { value: unknown }>; opacity?: number; transparent?: boolean };
+      };
+      if (!node.material) return;
+      const u = node.material.uniforms ?? {};
+      out.push({
+        type: node.type, visible: node.visible,
+        uReady: (u.uReady?.value as number) ?? null,
+        uHasMap: (u.uHasMap?.value as number) ?? null,
+        uPresence: (u.uPresence?.value as number) ?? null,
+        hasMapTex: u.uMap ? u.uMap.value !== null : null,
+        opacity: node.material.opacity ?? null,
+      });
+    });
+    return out;
+  },
+  /** What the renderer currently believes about the ghost, for tests. */
+  ghostView() {
+    if (!session) return null;
+    const o = (session.renderer as unknown as { ghostModel: { object: { visible: boolean; position: { x: number; y: number; z: number } } } }).ghostModel.object;
+    const g = session.state.ghost;
+    return {
+      visible: o.visible,
+      render: { x: o.position.x, y: o.position.y, z: o.position.z },
+      sim: { x: g.pos.x, z: g.pos.z },
+    };
+  },
   self() {
     if (!session) return null;
     const st = session.state;

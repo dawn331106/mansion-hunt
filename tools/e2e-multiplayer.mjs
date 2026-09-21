@@ -116,6 +116,65 @@ try {
   check('survivor moved in the HOST\'s authoritative state', moved > 0.3,
     `moved ${moved.toFixed(3)} units  ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
 
+  // --- Look, unlocked ----------------------------------------------------
+  /*
+   * Turning matters as much as walking. Pointer lock feeds `movementX`, which
+   * a client without the lock never receives, so dragging has to carry the
+   * view instead — otherwise a joining player walks in whatever direction they
+   * happened to spawn facing.
+   */
+  const yawOf = () => hostPage.evaluate((id) => {
+    const v = window.__mh.state.survivors.find((x) => x.id === id);
+    return v ? v.yaw : null;
+  }, selfId);
+
+  const yawBefore = await yawOf();
+  const box = await joinPage.locator('#gl').boundingBox();
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  await joinPage.mouse.move(cx, cy);
+  await joinPage.mouse.down();
+  for (let i = 1; i <= 12; i++) await joinPage.mouse.move(cx + i * 18, cy);
+  await joinPage.mouse.up();
+  await joinPage.waitForTimeout(600);
+  const yawAfter = await yawOf();
+
+  const dYaw = (() => {
+    let d = (yawAfter - yawBefore) % (Math.PI * 2);
+    if (d > Math.PI) d -= Math.PI * 2;
+    if (d < -Math.PI) d += Math.PI * 2;
+    return Math.abs(d);
+  })();
+  check(`survivor turned by dragging, in the HOST's state`, dYaw > 0.1,
+    `yaw ${yawBefore?.toFixed(3)} -> ${yawAfter?.toFixed(3)} (${dYaw.toFixed(3)} rad)`);
+
+  // Dragging must not fire the catch, or the click that starts a turn also
+  // spends the one action that decides a match.
+  const caughtByDrag = await joinPage.evaluate(() => window.__mh.state.survivors.filter((v) => !v.alive).length);
+  check('dragging did not trigger a catch', caughtByDrag === 0, `dead=${caughtByDrag}`);
+
+  // --- The ghost is visible to the survivor ------------------------------
+  /*
+   * The ghost's body discards every fragment until its texture has decoded,
+   * which is the right call for runtime-loaded art — a white slab where a face
+   * should be is worse than a moment's wait. It does mean a 404 makes the
+   * hunter invisible rather than ugly, and that is exactly what a wrong base
+   * path caused on Pages: the survivor was alone in the house with something
+   * it could not see.
+   *
+   * So this checks the uniforms that gate the body, not just that an object
+   * exists: `uReady` at 0 is an invisible ghost however correct its position.
+   */
+  const mats = await joinPage.evaluate(() => window.__mh.ghostMaterials());
+  const gated = mats.filter((m) => m.uReady !== null);
+  check('ghost body textures decoded on the client',
+    gated.length > 0 && gated.every((m) => m.uReady === 1),
+    gated.map((m) => `uReady=${m.uReady}`).join(' ') || 'no gated materials found');
+
+  const view = await joinPage.evaluate(() => window.__mh.ghostView());
+  check('ghost model is visible to the survivor', view?.visible === true,
+    JSON.stringify(view));
+
   // --- Asset 404s --------------------------------------------------------
   const assetErrors = joinErrors.filter((e) => /ghost\.png|ghost-body\.png|404/.test(e));
   check('no asset 404s on the client', assetErrors.length === 0,

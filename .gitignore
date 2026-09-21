@@ -2,3 +2,5 @@ node_modules
 dist
 *.local
 e2e-*.png
+probe*.mjs
+probe*.png

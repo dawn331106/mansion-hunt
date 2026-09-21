@@ -22,6 +22,16 @@ export class InputController {
   private pendingInteract = false;
   private pendingCatch = false;
   private locked = false;
+  /**
+   * Whether the mouse is being dragged while unlocked.
+   *
+   * Pointer lock is the intended way to look around, but a client cannot
+   * always have it — the browser refuses a request that did not come from a
+   * user gesture, and a joining player's match starts on a network message.
+   * Until they click to take the pointer, dragging is what keeps the view
+   * usable rather than frozen forward.
+   */
+  private dragging = false;
 
   private readonly onKeyDown = (e: KeyboardEvent) => {
     // Never swallow the browser's own shortcuts.
@@ -34,21 +44,40 @@ export class InputController {
   private readonly onKeyUp = (e: KeyboardEvent) => { this.keys.delete(e.code); };
 
   private readonly onMouseMove = (e: MouseEvent) => {
-    if (!this.locked) return;
+    // Locked is the normal path; dragging is the fallback when the browser
+    // would not grant the lock.
+    if (!this.locked && !this.dragging) return;
     this.yaw += e.movementX * MOUSE_SENSITIVITY;
     // Screen-down should look down, hence the sign.
     this.pitch = clamp(this.pitch - e.movementY * MOUSE_SENSITIVITY, -PITCH_LIMIT, PITCH_LIMIT);
   };
 
   private readonly onMouseDown = (e: MouseEvent) => {
-    if (!this.locked) return;
+    if (!this.locked) {
+      /*
+       * Unlocked, the left button turns the view instead of catching.
+       *
+       * Binding the catch here too would fire it on the very click the player
+       * used to start looking around, which in a game decided by one button is
+       * not a trade worth making. Right click still interacts, because there
+       * is no such ambiguity.
+       */
+      if (e.button === 0) this.dragging = true;
+      if (e.button === 2) this.pendingInteract = true;
+      return;
+    }
     // Left click is the catch, for a ghost who would rather not use Space.
     if (e.button === 0) this.pendingCatch = true;
     if (e.button === 2) this.pendingInteract = true;
   };
 
+  private readonly onMouseUp = (e: MouseEvent) => {
+    if (e.button === 0) this.dragging = false;
+  };
+
   private readonly onLockChange = () => {
     this.locked = document.pointerLockElement === this.element;
+    if (this.locked) this.dragging = false;
     if (!this.locked) this.keys.clear();
     this.onLockChanged?.(this.locked);
   };
@@ -64,6 +93,7 @@ export class InputController {
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('mousemove', this.onMouseMove);
     window.addEventListener('mousedown', this.onMouseDown);
+    window.addEventListener('mouseup', this.onMouseUp);
     element.addEventListener('contextmenu', this.onContextMenu);
     document.addEventListener('pointerlockchange', this.onLockChange);
   }
@@ -74,14 +104,16 @@ export class InputController {
    * In browsers that return a promise this rejects when the call did not come
    * from a user gesture — which is exactly what happens to a joining client,
    * whose match starts on a network message rather than a click. The rejection
-   * is expected and harmless: the paused overlay is a click target that asks
-   * again from a real gesture. It only has to be caught, or it surfaces as an
-   * unhandled rejection in the console.
+   * is expected, but it must be reported: `pointerlockchange` does not fire
+   * for a lock that was never granted, so without this the paused overlay —
+   * the click target that asks again from a real gesture — would stay hidden,
+   * leaving the player looking at the game with no way to take the pointer and
+   * no idea why the mouse does nothing.
    */
   requestLock(): void {
     const r = this.element.requestPointerLock() as unknown;
     if (r && typeof (r as Promise<void>).catch === 'function') {
-      (r as Promise<void>).catch(() => {});
+      (r as Promise<void>).catch(() => this.onLockChanged?.(false));
     }
   }
 
@@ -124,6 +156,7 @@ export class InputController {
     window.removeEventListener('mousemove', this.onMouseMove);
     window.removeEventListener('mousedown', this.onMouseDown);
     this.element.removeEventListener('contextmenu', this.onContextMenu);
+    window.removeEventListener('mouseup', this.onMouseUp);
     document.removeEventListener('pointerlockchange', this.onLockChange);
   }
 }
