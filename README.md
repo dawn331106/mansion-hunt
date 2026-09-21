@@ -213,15 +213,67 @@ measuring:
   of the head *and* inherited a narrow slice of the sphere's global UVs, so
   the artwork never showed at all.
 
+## Multiplayer
+
+One player hosts, the rest join with a six-character room code. The host picks
+who plays; everyone else chooses in the lobby whether they want to be the
+ghost or a survivor, and the host resolves it at the start — first to ask gets
+the ghost, and if nobody asks the host takes it, because a match with no ghost
+is not a match. Bots fill out the survivor side so two people still get a hunt.
+
+### How it works
+
+Host-authoritative over WebRTC. One player's machine runs the simulation and
+broadcasts the world twenty times a second; everyone else sends what they are
+trying to do thirty times a second and draws what they are sent.
+
+This is what the intent boundary was for from the first commit. `sim.step`
+takes a map of intents and returns the next state — so a remote player, a bot
+and the host's own keyboard are indistinguishable to it, and adding the
+network meant filling that map from a different source rather than changing
+the simulation at all.
+
+Clients do not predict. Prediction would hide the latency on your own
+movement, but it brings reconciliation, rollback, and a class of bug where
+your screen and the host's quietly disagree. Instead the world is played back
+100ms behind live and interpolated between snapshots, so uneven packet arrival
+does not show as stutter. The cost is a little input lag; the benefit is that
+what you see is always something the host actually believes happened.
+
+A client never sends a position, only an intent, so nobody walks through a
+wall or catches someone from across the house by lying about where they are.
+
+`npm run mptest` drives two real browsers through a whole match — host, join,
+start, and then checks the client's world tracks the host's and that the host
+sees the client's input. None of that is visible to a typechecker or to a
+single browser.
+
+### Hosting it
+
+The game is static files and the multiplayer is peer-to-peer, so there is no
+server to run and nothing to pay for. `.github/workflows/deploy.yml` publishes
+to GitHub Pages on every push to `main`.
+
+Signalling — the introduction between two peers — uses PeerJS's free public
+broker. It is only used to exchange connection details; once a match starts
+the traffic goes directly between players.
+
+Practical limits worth knowing: the host's connection quality decides
+everyone's, six to eight players is the ceiling, and if the host leaves the
+match ends. A dedicated relay would fix all three and cost either money or a
+free tier that sleeps between sessions.
+
 ## Not built yet
 
-**Multiplayer.** The architecture is laid out for it — intents, fixed
-timestep, an authoritative sim — but there is no networking layer. The plan is
-WebRTC peer-to-peer with the host running the authoritative simulation, joined
-by room code, which also carries the voice streams the ghost effect needs.
+**Voice chat.** The ghost's voice transformation exists and works, but it
+currently only processes your own microphone locally. Carrying real voice
+between players means adding a media stream to the existing peer connection,
+which is a small addition to `net/host.ts` and `net/client.ts` — the audio
+graph that would receive it is already built.
 
-Until then every other role is a bot, which is enough to play and more than
-enough to tune.
+**Host migration.** If the host leaves, the match ends. Handing authority to
+another peer is possible but fiddly, and a dedicated relay would be the
+simpler answer if it ever matters.
 
 ## Content warning
 

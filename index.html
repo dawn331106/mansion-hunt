@@ -136,6 +136,84 @@
   }
   #paused p { color: var(--dim); letter-spacing: 0.14em; text-transform: uppercase; font-size: 13px; }
 
+  #lobby, #join { display: none; }
+
+  /* The room code is read aloud over a call, so it is set large and wide. */
+  .code-box {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    border: 1px solid rgba(255,255,255,0.16);
+    padding: 12px 20px;
+  }
+  .code-label {
+    color: var(--dim);
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+  }
+  #lobby-code {
+    font-family: ui-monospace, monospace;
+    font-size: 30px;
+    letter-spacing: 0.30em;
+    color: #e8d9a8;
+  }
+
+  button.mini {
+    font-size: 11px;
+    padding: 7px 14px;
+    letter-spacing: 0.08em;
+  }
+  button.mini.on {
+    background: rgba(139,26,26,0.35);
+    border-color: rgba(200,60,60,0.8);
+    color: #ffd8d8;
+  }
+
+  .players {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    min-width: 320px;
+    max-width: 440px;
+    width: 100%;
+  }
+  .players li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    font-size: 14px;
+  }
+  .players .who { display: flex; align-items: center; gap: 9px; }
+  .players .tag {
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border: 1px solid rgba(255,255,255,0.2);
+    color: var(--dim);
+  }
+  .players .tag.ghost { color: #e08a8a; border-color: rgba(200,80,80,0.5); }
+  .players .tag.host { color: #d8c48a; border-color: rgba(200,170,90,0.45); }
+  .players .ping { color: var(--dim); font-size: 11px; font-family: ui-monospace, monospace; }
+
+  .code-input {
+    font-family: ui-monospace, monospace;
+    font-size: 30px;
+    letter-spacing: 0.28em;
+    text-align: center;
+    text-transform: uppercase;
+    width: 280px;
+    padding: 12px;
+    background: rgba(255,255,255,0.05);
+    color: #e8d9a8;
+    border: 1px solid rgba(255,255,255,0.18);
+  }
+  .code-input:focus { outline: none; border-color: rgba(200,80,80,0.6); }
+
   #end { display: none; }
   #end-title { font-size: clamp(30px, 6vw, 54px); }
   #end-title.win  { color: #a8d8b0; text-shadow: 0 0 30px rgba(120,200,140,0.4); }
@@ -177,6 +255,17 @@
     </button>
   </div>
 
+  <div class="roles">
+    <button id="mp-host">
+      Host a game
+      <span class="sub">others join with a code</span>
+    </button>
+    <button id="mp-join">
+      Join a game
+      <span class="sub">someone else is hosting</span>
+    </button>
+  </div>
+
   <div class="settings">
     <label>
       Survivors
@@ -208,6 +297,55 @@
     Headphones are strongly recommended — sound is how you find each other,
     and there is no map.
   </p>
+</div>
+
+<div id="lobby" class="overlay">
+  <h1>The House</h1>
+  <p class="tagline" id="lobby-sub">Waiting for the others.</p>
+
+  <div class="code-box">
+    <span class="code-label">room code</span>
+    <span id="lobby-code">------</span>
+    <button id="copy-code" class="mini">copy</button>
+  </div>
+
+  <ul id="lobby-players" class="players"></ul>
+
+  <div class="settings">
+    <span>I want to be</span>
+    <button id="pick-survivor" class="mini">survivor</button>
+    <button id="pick-ghost" class="mini">the ghost</button>
+  </div>
+
+  <div class="settings" id="host-settings">
+    <label>
+      Extra bots
+      <select id="lobby-bots">
+        <option value="0">0</option>
+        <option value="1">1</option>
+        <option value="2" selected>2</option>
+        <option value="3">3</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="roles">
+    <button id="lobby-start">Begin the hunt</button>
+    <button id="lobby-leave" class="mini">leave</button>
+  </div>
+  <p class="warning" id="lobby-note"></p>
+</div>
+
+<div id="join" class="overlay">
+  <h1>Join</h1>
+  <p class="tagline">Type the code the host gave you.</p>
+  <input id="join-code" class="code-input" maxlength="7" placeholder="ABC123"
+         autocomplete="off" spellcheck="false" />
+  <div class="roles">
+    <button id="join-go">Enter the house</button>
+    <button id="join-back" class="mini">back</button>
+  </div>
+  <p class="warning" id="join-note"></p>
 </div>
 
 <div id="paused" class="overlay">

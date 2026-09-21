@@ -12,6 +12,9 @@ import { createMatch, nearestFreeSpot, step } from './game/sim.js';
 import type { GameState, Role } from './game/types.js';
 import { Renderer } from './render/renderer.js';
 import { Hud, type HudState } from './ui/hud.js';
+import { GameHost } from './net/host.js';
+import { GameClient } from './net/client.js';
+import { cleanRoomCode, INPUT_HZ, type LobbyState, type NetEvents } from './net/protocol.js';
 
 /**
  * The game loop.
@@ -40,11 +43,28 @@ interface Session {
   subtitle: { text: string; until: number } | null;
   /** Local microphone, if the player has granted it. */
   mic: MediaStream | null;
+
+  /**
+   * How this session is networked.
+   *
+   * `solo` runs everything locally, exactly as before. `host` runs the
+   * authoritative simulation and broadcasts it. `client` runs no simulation at
+   * all and draws what it is sent.
+   */
+  net: 'solo' | 'host' | 'client';
+  /** Set when hosting: which peer drives which actor. */
+  assignments: Record<string, string>;
 }
 
 const mansion = buildMansion();
 let session: Session | null = null;
 let rafId = 0;
+
+/** The network objects, which outlive any single match. */
+let host: GameHost | null = null;
+let client: GameClient | null = null;
+/** Accumulates toward the next input packet, for a client. */
+let inputAccum = 0;
 
 // --- Boot. ---------------------------------------------------------------
 
@@ -74,15 +94,227 @@ document.getElementById('back-to-menu')!.addEventListener('click', () => {
 /** The role to replay when "Again" is pressed. */
 let lastRole: Role = 'survivor';
 
-async function start(role: Role): Promise<void> {
+// --- Multiplayer -----------------------------------------------------------
+
+const lobbyScreen = document.getElementById('lobby') as HTMLDivElement;
+const joinScreen = document.getElementById('join') as HTMLDivElement;
+const lobbyCode = document.getElementById('lobby-code') as HTMLElement;
+const lobbyPlayers = document.getElementById('lobby-players') as HTMLUListElement;
+const lobbyNote = document.getElementById('lobby-note') as HTMLElement;
+const lobbySub = document.getElementById('lobby-sub') as HTMLElement;
+const lobbyStart = document.getElementById('lobby-start') as HTMLButtonElement;
+const hostSettings = document.getElementById('host-settings') as HTMLElement;
+const joinNote = document.getElementById('join-note') as HTMLElement;
+const joinInput = document.getElementById('join-code') as HTMLInputElement;
+const pickSurvivor = document.getElementById('pick-survivor') as HTMLButtonElement;
+const pickGhost = document.getElementById('pick-ghost') as HTMLButtonElement;
+
+/**
+ * A name for this player.
+ *
+ * Remembered across sessions, because typing it every time to play with the
+ * same three friends is pure friction. Nothing else is stored, and a browser
+ * that refuses local storage just gets a fresh name each time.
+ */
+function playerName(): string {
+  let n = '';
+  try { n = localStorage.getItem('mansion-hunt:name') ?? ''; } catch { /* private mode */ }
+  if (!n) {
+    n = `Player ${Math.floor(Math.random() * 900 + 100)}`;
+    try { localStorage.setItem('mansion-hunt:name', n); } catch { /* fine */ }
+  }
+  return n;
+}
+
+document.getElementById('mp-host')!.addEventListener('click', () => void openHost());
+document.getElementById('mp-join')!.addEventListener('click', () => {
+  menu.style.display = 'none';
+  joinScreen.style.display = 'flex';
+  joinNote.textContent = '';
+  joinInput.value = '';
+  joinInput.focus();
+});
+document.getElementById('join-back')!.addEventListener('click', () => {
+  joinScreen.style.display = 'none';
+  menu.style.display = 'flex';
+});
+document.getElementById('join-go')!.addEventListener('click', () => void doJoin());
+joinInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') void doJoin(); });
+
+document.getElementById('copy-code')!.addEventListener('click', () => {
+  void navigator.clipboard?.writeText(lobbyCode.textContent ?? '').then(
+    () => { lobbyNote.textContent = 'Code copied.'; },
+    () => { lobbyNote.textContent = 'Could not copy — read it out instead.'; },
+  );
+});
+
+pickSurvivor.addEventListener('click', () => setWants('survivor'));
+pickGhost.addEventListener('click', () => setWants('ghost'));
+
+function setWants(role: Role): void {
+  pickSurvivor.classList.toggle('on', role === 'survivor');
+  pickGhost.classList.toggle('on', role === 'ghost');
+  host?.setLocalWants(role);
+  client?.sendWants(role);
+}
+
+(document.getElementById('lobby-bots') as HTMLSelectElement)
+  .addEventListener('change', (e) => {
+    host?.setBots(Number((e.target as HTMLSelectElement).value));
+  });
+
+document.getElementById('lobby-leave')!.addEventListener('click', () => {
+  host?.close(); host = null;
+  client?.close(); client = null;
+  lobbyScreen.style.display = 'none';
+  menu.style.display = 'flex';
+});
+
+lobbyStart.addEventListener('click', () => {
+  if (!host) return;
+  const { assignments, roles, survivorCount, seed } = host.start();
+  void start(roles[host.localId] ?? 'ghost', {
+    net: 'host',
+    survivorCount,
+    selfId: assignments[host.localId],
+    assignments,
+    seed,
+  });
+});
+
+async function openHost(): Promise<void> {
+  menu.style.display = 'none';
+  lobbyScreen.style.display = 'flex';
+  lobbyNote.textContent = 'Opening the house…';
+  setWants('ghost');
+
+  host = new GameHost(
+    {
+      onLobby: (l) => drawLobby(l, true),
+      onError: (m) => { lobbyNote.textContent = m; },
+      onStart: () => { /* the click handler starts the match */ },
+    },
+    playerName(),
+    'ghost',
+  );
+
+  try {
+    await host.open();
+    lobbyCode.textContent = host.code;
+    lobbyNote.textContent = 'Give that code to the others.';
+    drawLobby(host.lobby(), true);
+  } catch {
+    // `onError` has already said why.
+  }
+}
+
+async function doJoin(): Promise<void> {
+  const code = cleanRoomCode(joinInput.value);
+  if (code.length !== 6) {
+    joinNote.textContent = 'A room code is six letters and numbers.';
+    return;
+  }
+  joinNote.textContent = 'Looking for that house…';
+
+  client = new GameClient({
+    onLobby: (l) => {
+      joinScreen.style.display = 'none';
+      lobbyScreen.style.display = 'flex';
+      drawLobby(l, false);
+    },
+    onStart: (you, role, survivorCount, seed) => {
+      void start(role, { net: 'client', survivorCount, selfId: you, seed });
+    },
+    onSnapshot: (state, events) => applySnapshot(state, events),
+    onError: (m) => { joinNote.textContent = m; lobbyNote.textContent = m; },
+    onClosed: (reason) => {
+      teardownMatch();
+      lobbyScreen.style.display = 'none';
+      joinScreen.style.display = 'none';
+      menu.style.display = 'flex';
+      lobbyNote.textContent = reason;
+    },
+  });
+
+  try {
+    await client.join(code, playerName());
+    setWants('survivor');
+  } catch {
+    client = null;
+  }
+}
+
+/** Redraw the lobby list. */
+function drawLobby(l: LobbyState, isHost: boolean): void {
+  lobbyCode.textContent = l.code;
+  lobbySub.textContent = isHost
+    ? 'Others can join with the code below.'
+    : 'Waiting for the host to begin.';
+  lobbyStart.style.display = isHost ? '' : 'none';
+  hostSettings.style.display = isHost ? '' : 'none';
+
+  lobbyPlayers.innerHTML = '';
+  for (const p of l.players) {
+    const li = document.createElement('li');
+
+    const who = document.createElement('span');
+    who.className = 'who';
+    const name = document.createElement('span');
+    name.textContent = p.name;
+    who.appendChild(name);
+
+    if (p.isHost) {
+      const t = document.createElement('span');
+      t.className = 'tag host';
+      t.textContent = 'host';
+      who.appendChild(t);
+    }
+    const r = document.createElement('span');
+    r.className = p.wants === 'ghost' ? 'tag ghost' : 'tag';
+    r.textContent = p.wants === 'ghost' ? 'wants ghost' : 'survivor';
+    who.appendChild(r);
+
+    const ping = document.createElement('span');
+    ping.className = 'ping';
+    ping.textContent = p.isHost ? '' : `${p.ping}ms`;
+
+    li.appendChild(who);
+    li.appendChild(ping);
+    lobbyPlayers.appendChild(li);
+  }
+
+  if (isHost) {
+    const ghosts = l.players.filter((p) => p.wants === 'ghost').length;
+    lobbyNote.textContent = ghosts === 0
+      ? 'Nobody wants to be the ghost, so you will be.'
+      : ghosts > 1
+        ? 'More than one wants the ghost; whoever asked first gets it.'
+        : 'Ready when you are.';
+  }
+}
+
+async function start(
+  role: Role,
+  opts: {
+    net?: 'solo' | 'host' | 'client';
+    survivorCount?: number;
+    selfId?: string;
+    assignments?: Record<string, string>;
+    seed?: number;
+  } = {},
+): Promise<void> {
   // Whatever came before is finished with; release it before building more.
-  teardown();
+  teardownMatch();
 
   menu.style.display = 'none';
   endScreen.style.display = 'none';
   pausedNote.style.display = 'none';
 
-  const survivorCount = Number(
+  lobbyScreen.style.display = 'none';
+  joinScreen.style.display = 'none';
+
+  const net = opts.net ?? 'solo';
+  const survivorCount = opts.survivorCount ?? Number(
     (document.getElementById('survivor-count') as HTMLSelectElement).value,
   );
   const wantMic = (document.getElementById('use-mic') as HTMLInputElement).checked;
@@ -92,9 +324,20 @@ async function start(role: Role): Promise<void> {
   resetSurvivorBots();
   resetGhostBot();
 
-  const state = createMatch(mansion, { survivorCount, humanRole: role });
-  const selfId = role === 'ghost' ? 'ghost' : state.survivors[0].id;
-  const startYaw = role === 'ghost' ? state.ghost.yaw : state.survivors[0].yaw;
+  /*
+   * Every machine builds the same match from the same seed.
+   *
+   * A client never simulates, so strictly it only needs the geometry — but
+   * building the identical starting state means the key, the spawns and the
+   * bots line up with the host's before the first snapshot lands, and there
+   * is no visible correction on the first frame.
+   */
+  const state = createMatch(mansion, { survivorCount, humanRole: role, seed: opts.seed });
+  const selfId = opts.selfId ?? (role === 'ghost' ? 'ghost' : state.survivors[0].id);
+  const startActor = role === 'ghost'
+    ? state.ghost
+    : state.survivors.find((v) => v.id === selfId) ?? state.survivors[0];
+  const startYaw = startActor.yaw;
 
   /**
    * Audio must never be able to stop the game starting.
@@ -122,6 +365,7 @@ async function start(role: Role): Promise<void> {
   session = {
     state, role, selfId, input, renderer, hud, audio,
     toast: null, subtitle: null, mic: null,
+    net, assignments: opts.assignments ?? {},
   };
 
   // --- Microphone. Only the ghost's voice is transformed, but a survivor's
@@ -155,6 +399,84 @@ async function start(role: Role): Promise<void> {
   rafId = requestAnimationFrame(frame);
 }
 
+/**
+ * Take a snapshot from the host.
+ *
+ * A client does not simulate, so this is where its world comes from. The
+ * state is stored whole and the events are turned into the same sounds and
+ * scares the host produces locally — a caught survivor has to hear the roar
+ * on their own machine, and no amount of comparing snapshots would tell them
+ * exactly when it happened or where the ghost was standing.
+ */
+function applySnapshot(state: GameState, events: NetEvents): void {
+  const s = session;
+  if (!s || s.net !== 'client') return;
+
+  s.state = state;
+
+  const listener = listenerPos(s);
+
+  for (const f of events.footsteps) {
+    if (f.actorId !== s.selfId) s.audio.footstep(f.x, f.z, f.volume);
+  }
+
+  if (events.pulsed && s.role === 'ghost') {
+    s.audio.stinger('pulse');
+    showToast('Their positions, three seconds ago.');
+  }
+
+  if (events.spotted === s.selfId) {
+    s.audio.stinger('spotted');
+    showToast('It has seen you.');
+  }
+
+  if (events.keyTaken) {
+    s.audio.stinger('key');
+    showToast(events.keyTaken === s.selfId
+      ? 'You have the key. Get to the gate.'
+      : 'Someone has found the key.');
+  }
+
+  for (const h of events.hideChanged) {
+    if (h.survivorId === s.selfId) {
+      s.audio.stinger(h.spotId ? 'hide' : 'unhide');
+      const self = s.state.survivors.find((x) => x.id === s.selfId);
+      if (self) s.input.setLook(self.yaw, self.pitch);
+    }
+  }
+
+  if (events.escaped) {
+    s.audio.stinger('escape');
+    showToast(events.escaped === s.selfId ? 'You are out.' : 'Someone got out.');
+  }
+
+  for (const c of events.caught) {
+    if (c.survivorId === s.selfId) {
+      s.audio.stinger('jumpscare');
+      s.renderer.jumpscare.trigger(new THREE.Vector3(c.x, 1.5, c.z));
+    } else {
+      const victim = s.state.survivors.find((x) => x.id === c.survivorId);
+      showToast(s.role === 'ghost'
+        ? `Caught ${victim?.name ?? 'someone'}.`
+        : 'One of them is gone.');
+    }
+  }
+
+  /*
+   * The ghost's taunts come from the host.
+   *
+   * Deciding locally when to speak would have every client choose a different
+   * line at a different moment, so the subtitle on your screen would not match
+   * the voice you heard. The host picks; everyone plays the same one, placed
+   * at the ghost's position so it still fades with distance.
+   */
+  if (events.taunt) {
+    const d = dist(listener.x, listener.z, events.taunt.x, events.taunt.z);
+    const said = s.audio.taunt(s.state.time, events.taunt.x, events.taunt.z, 'hunting', d);
+    if (said) s.subtitle = { text: events.taunt.text, until: s.state.time + 4.0 };
+  }
+}
+
 // --- The loop. -----------------------------------------------------------
 
 let last = 0;
@@ -175,9 +497,26 @@ function frame(now: number): void {
 
   const s = session;
 
-  // The game only runs while the pointer is locked. Losing lock is a pause,
-  // which matters in a game where looking away is a tactical disadvantage.
-  if (s.input.isLocked && s.state.phase === 'playing') {
+  if (s.net === 'client') {
+    /*
+     * A client simulates nothing.
+     *
+     * It sends what the player is trying to do and draws the world it is sent,
+     * played back slightly behind live so uneven packet arrival does not show
+     * as stutter. Nothing here can disagree with the host, because nothing
+     * here decides anything.
+     */
+    inputAccum += dt;
+    const period = 1 / INPUT_HZ;
+    while (inputAccum >= period) {
+      inputAccum -= period;
+      if (s.input.isLocked) client?.sendIntent(s.input.read());
+    }
+    const world = client?.interpolated();
+    if (world) s.state = world;
+  } else if (s.input.isLocked && s.state.phase === 'playing') {
+    // Solo and host both simulate. The game only runs while the pointer is
+    // locked, which matters in a game where looking away is a disadvantage.
     accumulator += dt;
     while (accumulator >= TICK) {
       tick(s, TICK);
@@ -197,6 +536,9 @@ function frame(now: number): void {
     role: s.role,
     self: s.state.survivors.find((x) => x.id === s.selfId) ?? null,
     ghost: { x: s.state.ghost.pos.x, z: s.state.ghost.pos.z },
+    selfId: s.selfId,
+    net: s.net,
+    survivors: s.state.survivors.map((v) => ({ id: v.id, pos: { x: v.pos.x, z: v.pos.z } })),
     camera: s.renderer.camera.position.toArray(),
     /**
      * Where a fixed world point lands on screen, in normalised device
@@ -238,6 +580,9 @@ function frame(now: number): void {
   }
 }
 
+/** The taunt spoken during the current tick, for the host to broadcast. */
+let spokenThisTick: { text: string; x: number; z: number } | null = null;
+
 function tick(s: Session, dt: number): void {
   const intents = new Map<string, Intent>();
 
@@ -245,16 +590,32 @@ function tick(s: Session, dt: number): void {
   const playerIntent = s.input.read();
   intents.set(s.selfId, playerIntent);
 
-  // --- Everyone else is a bot. ---
+  /*
+   * Remote players first, then bots for whatever is left.
+   *
+   * The order matters: an actor driven by a person must not also be driven by
+   * a bot, or the two fight each other and the body twitches. Taking the
+   * network intents first and then only filling the gaps is what keeps that
+   * from happening, and it is the whole reason the simulation was written to
+   * accept a map of intents rather than to ask each actor what it wants.
+   */
+  if (s.net === 'host' && host) {
+    host.setLocalIntent(playerIntent);
+    for (const [actorId, intent] of host.intents(s.assignments)) {
+      intents.set(actorId, intent);
+    }
+  }
+
   for (const sv of s.state.survivors) {
-    if (sv.id === s.selfId) continue;
+    if (intents.has(sv.id)) continue;
     if (!sv.alive || sv.escaped) continue;
     intents.set(sv.id, survivorBotIntent(s.state, mansion, sv, dt));
   }
-  if (s.role !== 'ghost') {
+  if (!intents.has('ghost')) {
     intents.set('ghost', ghostBotIntent(s.state, mansion, dt));
   }
 
+  spokenThisTick = null;
   const ev = step(s.state, mansion, intents, dt);
 
 
@@ -397,8 +758,23 @@ function tick(s: Session, dt: number): void {
       nextTauntAt = said
         ? s.state.time + gap + Math.random() * gap * 0.7
         : s.state.time + 1.2;
-      if (said) s.subtitle = { text: said, until: s.state.time + 4.0 };
+      if (said) {
+        s.subtitle = { text: said, until: s.state.time + 4.0 };
+        // Hosts pass the line on, so everyone hears and reads the same one.
+        spokenThisTick = { text: said, x: g.pos.x, z: g.pos.z };
+      }
     }
+  }
+
+  /*
+   * Send the world on.
+   *
+   * At the end of the tick, so the snapshot carries the state the events
+   * describe rather than the one before them. The host rate-limits this
+   * internally; calling it every tick is correct and cheap.
+   */
+  if (s.net === 'host' && host) {
+    host.maybeSnapshot(dt, s.state, toNetEvents(ev, spokenThisTick));
   }
 
   // --- Spatial audio: move the listener and any live voices. ---
@@ -482,6 +858,32 @@ function finish(s: Session): void {
  * releasing the first leaks both, so after a few rounds the page simply stops
  * being able to draw or make a sound.
  */
+/**
+ * Mirror the simulation's events onto the wire.
+ *
+ * Only the host produces these. A snapshot carries state, and state alone
+ * cannot say when something happened or where — a client could infer from two
+ * snapshots that a survivor died, but not the instant, and the jumpscare has
+ * to fire on the frame it happened.
+ */
+function toNetEvents(ev: ReturnType<typeof step>, taunt: { text: string; x: number; z: number } | null): NetEvents {
+  return {
+    caught: ev.caught.map((c) => ({ survivorId: c.survivorId, x: c.byGhostAt.x, z: c.byGhostAt.z })),
+    footsteps: ev.footsteps.map((f) => ({ actorId: f.actorId, x: f.x, z: f.z, volume: f.volume })),
+    pulsed: ev.pulsed,
+    keyTaken: ev.keyTaken?.survivorId ?? null,
+    escaped: ev.escaped?.survivorId ?? null,
+    hideChanged: ev.hideChanged.map((h) => ({ survivorId: h.survivorId, spotId: h.spotId })),
+    spotted: ev.spotted?.survivorId ?? null,
+    taunt,
+  };
+}
+
+/** Tear down the current match, leaving any lobby connection intact. */
+function teardownMatch(): void {
+  teardown();
+}
+
 function teardown(): void {
   cancelAnimationFrame(rafId);
   rafId = 0;
