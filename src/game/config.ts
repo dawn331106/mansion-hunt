@@ -137,10 +137,14 @@ export const MATCH = {
    * Without it the first survivor died 5.9 seconds in — before anyone had
    * crossed a room, let alone searched one. A hunt needs the hunted to have
    * somewhere to have got to; this is the difference between a game and an
-   * ambush. The ghost spends it standing in the dark, which is its own kind
-   * of dread for anyone who can hear it.
+   * ambush.
+   *
+   * Twenty seconds of it was too long to sit through as the ghost: the screen
+   * simply did not respond and read as a broken game rather than a rule. Ten
+   * is enough for survivors to scatter, and the HUD now counts it down so the
+   * ghost knows it is being held rather than wondering what is wrong.
    */
-  ghostHeadStart: 20,
+  ghostHeadStart: 10,
 
   /**
    * Seconds before the house claims everyone. 0 disables the clock.

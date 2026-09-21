@@ -1,4 +1,4 @@
-import { PULSE, SURVIVOR } from '../game/config.js';
+import { MATCH, PULSE, SURVIVOR } from '../game/config.js';
 import type { GameState, Role, Survivor } from '../game/types.js';
 
 /**
@@ -58,6 +58,7 @@ export class Hud {
     } else if (hud.role === 'ghost') {
       this.drawPulseTimer(c, w, h, state);
       this.drawCatchState(c, w, h, hud);
+      if (state.time < MATCH.ghostHeadStart) this.drawHold(c, w, h, state);
     }
 
     if (hud.prompt) this.drawPrompt(c, w, h, hud.prompt);
@@ -141,6 +142,27 @@ export class Hud {
     c.textAlign = 'center';
     c.fillStyle = 'rgba(255,255,255,0.4)';
     c.fillText('E to climb out', w / 2, h - 40);
+    c.restore();
+  }
+
+  /**
+   * The hold at the start of a match.
+   *
+   * The ghost cannot move for the first few seconds while the survivors
+   * scatter. Without this the screen just does not respond to the controls,
+   * which reads as a bug rather than a rule — the single most confusing thing
+   * the game can do to someone who has only just pressed play.
+   */
+  private drawHold(c: CanvasRenderingContext2D, w: number, h: number, state: GameState): void {
+    const left = Math.max(0, MATCH.ghostHeadStart - state.time);
+    c.save();
+    c.textAlign = 'center';
+    c.font = '300 44px ui-sans-serif, system-ui, sans-serif';
+    c.fillStyle = 'rgba(220,90,90,0.92)';
+    c.fillText(Math.ceil(left).toString(), w / 2, h / 2 - 54);
+    c.font = '400 13px ui-sans-serif, system-ui, sans-serif';
+    c.fillStyle = 'rgba(255,255,255,0.55)';
+    c.fillText('they are still hiding — you cannot move yet', w / 2, h / 2 - 28);
     c.restore();
   }
 
