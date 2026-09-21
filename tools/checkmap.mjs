@@ -86,14 +86,26 @@ for (const h of m.hidingSpots) {
  * worth a test — it is the kind of thing that erodes one convenient doorway
  * at a time.
  */
+/*
+ * Door counts, by what the space is for.
+ *
+ * A room with three ways out is not somewhere you can be cornered, and being
+ * cornered is the game — so rooms stay capped at two. Thoroughfares are the
+ * opposite case: the courtyard and the verandah are meant to be crossed and
+ * to offer a choice when you do, and capping them at two is what made the old
+ * plan a circuit. They are held to a ceiling only so a mistake in the plan
+ * still shows up as a number.
+ */
 console.log('door counts');
 {
+  const THOROUGHFARE = /^(courtyard|verandah|corridor-|outer-|spur-)/;
   const byRoom = {};
   for (const d of m.doors) (byRoom[d.room] ??= []).push(d.id);
   for (const [room, ds] of Object.entries(byRoom)) {
-    if (ds.length > 2) {
+    const limit = THOROUGHFARE.test(room) ? 6 : 2;
+    if (ds.length > limit) {
       bad++;
-      console.log(`  FAIL ${room} has ${ds.length} doors: ${ds.join(', ')}`);
+      console.log(`  FAIL ${room} has ${ds.length} doors (limit ${limit}): ${ds.join(', ')}`);
     }
   }
 }

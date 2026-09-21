@@ -4,3 +4,5 @@ dist
 e2e-*.png
 probe*.mjs
 probe*.png
+shot-*.png
+*-tmp.mjs
