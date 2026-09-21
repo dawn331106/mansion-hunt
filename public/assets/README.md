@@ -39,10 +39,23 @@ To swap either piece of art, replace the source and re-run the script;
 `GHOST_TEXTURE_URL` and `GHOST_BODY_URL` in `src/render/ghostModel.ts` already
 point at the outputs.
 
-## ghost.glb — a modelled ghost (optional, and the better path)
+## ghost.glb — the modelled ghost
 
-Drop a rigged humanoid `.glb` here as `ghost.glb` and it replaces the
-procedural figure automatically. Nothing else needs changing: the loader
+**Currently:** `Soldier.glb` from the three.js examples (MIT licensed, via
+mrdoob/three.js). A rigged humanoid with `Idle`, `Walk` and `Run` clips and a
+`mixamorig:Head` bone.
+
+It is a soldier, not a ghost, and that is a deliberate trade. Free rigged
+*ghosts* with usable animation are rare; the rig is what actually matters,
+because how a figure moves is most of what sells it as alive. What it is
+wearing is a material problem, and material is cheap to replace — the loader
+discards the original textures for a spectral shader and hangs a robe from the
+chest bone, which covers the webbing and pouches and leaves a tall hooded
+silhouette.
+
+Replacing it with a purpose-built ghost model is a straight improvement and
+needs no code changes. Drop a rigged humanoid `.glb` here as `ghost.glb` and
+it replaces whatever is there automatically. Nothing else needs changing: the loader
 scales it to 1.78m wherever the artist left it, stands its feet on the floor,
 finds the head bone so the jumpscare can frame the face, and picks animation
 clips by name.

@@ -492,11 +492,45 @@ export function createGhost(): GhostModel {
 
   let presence = 1;
   let lunge = 0;
+  /** Last position, for measuring how fast the loaded model is travelling. */
+  let lastGX = 0;
+  let lastGZ = 0;
 
   return {
     object: group,
 
     update(_dt, time, camera) {
+      /*
+       * A loaded model owns the frame.
+       *
+       * This early return was missing, so `loaded.update` was never called:
+       * the model was added to the scene and rendered, but its animation
+       * mixer never advanced, leaving the skinned mesh frozen in its bind
+       * pose. The jumpscare showed a figure standing with its arms straight
+       * out, which is the least frightening thing available.
+       */
+      if (loaded) {
+        loaded.update(_dt);
+        loaded.setPresence(presence);
+        loaded.setLunge(lunge);
+
+        /*
+         * Pick the clip from measured movement rather than from a flag, so
+         * the legs always match what is on screen.
+         */
+        const dx = group.position.x - lastGX;
+        const dz = group.position.z - lastGZ;
+        const spd = _dt > 1e-4 ? Math.hypot(dx, dz) / _dt : 0;
+        lastGX = group.position.x;
+        lastGZ = group.position.z;
+        loaded.setAction(
+          lunge > 0.15 ? 'attack' : spd > 3.6 ? 'chase' : spd > 0.35 ? 'walk' : 'idle',
+        );
+
+        glow.intensity = presence * (4.0 + Math.sin(time * 4.1) * 1.0 + lunge * 15);
+        return;
+      }
+
       u.uTime.value = time;
       u.uPresence.value = presence;
 
