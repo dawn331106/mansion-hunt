@@ -54,19 +54,38 @@ const pausedNote = document.getElementById('paused') as HTMLDivElement;
 
 document.getElementById('play-survivor')!.addEventListener('click', () => start('survivor'));
 document.getElementById('play-ghost')!.addEventListener('click', () => start('ghost'));
+/**
+ * "Again" replays the same role immediately; "Change role" goes back.
+ *
+ * Someone who has just been caught wants to be back in the house, not reading
+ * a menu they have already read. The role they were last playing is the one
+ * they want again, so that is what the button does.
+ */
 document.getElementById('play-again')!.addEventListener('click', () => {
+  void start(lastRole);
+});
+document.getElementById('back-to-menu')!.addEventListener('click', () => {
   endScreen.style.display = 'none';
   menu.style.display = 'flex';
 });
 
+/** The role to replay when "Again" is pressed. */
+let lastRole: Role = 'survivor';
+
 async function start(role: Role): Promise<void> {
+  // Whatever came before is finished with; release it before building more.
+  teardown();
+
   menu.style.display = 'none';
   endScreen.style.display = 'none';
+  pausedNote.style.display = 'none';
 
   const survivorCount = Number(
     (document.getElementById('survivor-count') as HTMLSelectElement).value,
   );
   const wantMic = (document.getElementById('use-mic') as HTMLInputElement).checked;
+
+  lastRole = role;
 
   resetSurvivorBots();
   resetGhostBot();
@@ -75,8 +94,20 @@ async function start(role: Role): Promise<void> {
   const selfId = role === 'ghost' ? 'ghost' : state.survivors[0].id;
   const startYaw = role === 'ghost' ? state.ghost.yaw : state.survivors[0].yaw;
 
+  /**
+   * Audio must never be able to stop the game starting.
+   *
+   * `resume()` waits on the browser, and a context that stays suspended — no
+   * gesture credited, a device that fails to open, an autoplay policy that
+   * disagrees — leaves the await pending forever and the match never begins.
+   * A silent game is a bad outcome; a game that hangs on a black screen is a
+   * much worse one, so this proceeds either way.
+   */
   const audio = new AudioEngine();
-  await audio.resume();
+  await Promise.race([
+    audio.resume().catch(() => { /* play on in silence */ }),
+    new Promise((r) => setTimeout(r, 1500)),
+  ]);
 
   const renderer = new Renderer(glCanvas, mansion);
   const hud = new Hud(hudCanvas);
@@ -110,7 +141,8 @@ async function start(role: Role): Promise<void> {
 
   last = performance.now();
   accumulator = 0;
-  cancelAnimationFrame(rafId);
+  clock = 0;
+  endAt = null;
   rafId = requestAnimationFrame(frame);
 }
 
@@ -119,6 +151,8 @@ async function start(role: Role): Promise<void> {
 let last = 0;
 let accumulator = 0;
 let clock = 0;
+/** When the end screen may appear, once the scare has had its moment. */
+let endAt: number | null = null;
 
 function frame(now: number): void {
   rafId = requestAnimationFrame(frame);
@@ -144,6 +178,17 @@ function frame(now: number): void {
   //     behind the overlay rather than frozen to black. ---
   s.renderer.render(s.state, s.role, s.selfId, dt, clock);
 
+  // A small window onto the running match, for the browser test harness and
+  // for debugging a build in the wild. Read-only; nothing depends on it.
+  (window as unknown as { __match: unknown }).__match = {
+    time: s.state.time,
+    phase: s.state.phase,
+    role: s.role,
+    self: s.state.survivors.find((x) => x.id === s.selfId) ?? null,
+    ghost: { x: s.state.ghost.pos.x, z: s.state.ghost.pos.z },
+    camera: s.renderer.camera.position.toArray(),
+  };
+
   const self = s.state.survivors.find((x) => x.id === s.selfId) ?? null;
   const hudState: HudState = {
     role: s.role,
@@ -154,7 +199,20 @@ function frame(now: number): void {
   };
   s.hud.draw(s.state, hudState, window.innerWidth, window.innerHeight);
 
-  if (s.state.phase !== 'playing') finish(s);
+  /**
+   * End the match — but never on top of a jumpscare.
+   *
+   * Catching the last survivor ends the match on the same tick the scare
+   * begins, so tearing down here would destroy the renderer mid-lunge and the
+   * most important scare in the game — the one that loses it — would never
+   * play. The end screen can wait a second and a half.
+   */
+  if (s.state.phase !== 'playing' && !s.renderer.jumpscare.active) {
+    // A short beat after the scare before the screen changes, so the cut to
+    // black lands as part of the scare rather than interrupting it.
+    endAt = endAt ?? clock + 0.45;
+    if (clock >= endAt) { endAt = null; finish(s); }
+  }
 }
 
 function tick(s: Session, dt: number): void {
@@ -284,8 +342,16 @@ function showToast(text: string): void {
   session.toast = { text, until: session.state.time + 3.2 };
 }
 
+/**
+ * End the match and show the result.
+ *
+ * This tears the session down completely rather than merely showing a screen
+ * over it. Leaving the loop running was what broke restarting: the finished
+ * state is still `!== 'playing'`, so the next frame called `finish` again and
+ * put the end screen straight back over the menu the player had just asked
+ * for. Stopping the loop here is what makes "Again" possible at all.
+ */
 function finish(s: Session): void {
-  if (endScreen.style.display === 'flex') return;
   document.exitPointerLock();
 
   const won =
@@ -298,9 +364,30 @@ function finish(s: Session): void {
     s.state.result?.reason ?? '';
 
   endScreen.style.display = 'flex';
+  pausedNote.style.display = 'none';
+
+  teardown();
+}
+
+/**
+ * Release everything the current session holds.
+ *
+ * The renderer owns a WebGL context and the audio engine owns an AudioContext,
+ * and browsers allow only a handful of each. Starting a second match without
+ * releasing the first leaks both, so after a few rounds the page simply stops
+ * being able to draw or make a sound.
+ */
+function teardown(): void {
+  cancelAnimationFrame(rafId);
+  rafId = 0;
+  const s = session;
+  session = null;
+  if (!s) return;
 
   s.input.dispose();
   s.mic?.getTracks().forEach((t) => t.stop());
+  s.renderer.dispose();
+  void s.audio.close();
 }
 
 // --- Window plumbing. ----------------------------------------------------

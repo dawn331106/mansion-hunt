@@ -181,6 +181,7 @@
     <label>
       Survivors
       <select id="survivor-count">
+        <option value="1">1</option>
         <option value="2">2</option>
         <option value="3" selected>3</option>
         <option value="4">4</option>
@@ -216,7 +217,10 @@
 <div id="end" class="overlay">
   <h1 id="end-title">You lose</h1>
   <p id="end-reason"></p>
-  <button id="play-again">Again</button>
+  <div class="roles">
+    <button id="play-again">Again</button>
+    <button id="back-to-menu">Change role</button>
+  </div>
 </div>
 
 <script type="module" src="/src/main.ts"></script>

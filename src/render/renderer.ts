@@ -101,7 +101,7 @@ export class Renderer {
 
     const g = state.ghost;
     this.ghostModel.object.position.set(g.pos.x, 0, g.pos.z);
-    this.ghostModel.object.rotation.y = -g.yaw + Math.PI / 2;
+    this.ghostModel.object.rotation.y = -g.yaw - Math.PI / 2;
     this.ghostModel.update(0, time, this.camera);
     // Playing as the ghost, your own body would fill the screen; hide it.
     this.ghostModel.object.visible = role !== 'ghost';
@@ -171,8 +171,33 @@ export class Renderer {
     }
 
     const self = state.survivors.find((s) => s.id === viewerId);
-    if (!self || !self.alive) {
+
+    /**
+     * Death does not mean the camera leaves immediately.
+     *
+     * Cutting to the spectator orbit the instant a survivor dies threw the
+     * player twenty-six metres into the air on the same frame the scare
+     * began, so the jumpscare played out correctly and invisibly, from a
+     * bird's-eye view. The body stays where it fell and the camera stays in
+     * its head until the scare has finished; only then does it pull out.
+     */
+    if (!self || (!self.alive && !this.jumpscare.active)) {
       this.spectate(state, dt, time);
+      return;
+    }
+
+    if (self && !self.alive) {
+      // Dead, mid-scare: hold the last eye position and let the scare drive
+      // the look. Nothing else about the body updates any more.
+      this.camera.position.set(self.pos.x, SURVIVOR.eyeHeight * 0.8, self.pos.z);
+      if (scare.lookAt) {
+        this.camera.lookAt(scare.lookAt.x, 1.45, scare.lookAt.z);
+        this.camera.position.x += scare.shake.x;
+        this.camera.position.y += scare.shake.y;
+        this.camera.position.z += scare.shake.z;
+      } else {
+        this.applyLook(self.yaw, self.pitch, scare.shake);
+      }
       return;
     }
 
@@ -217,14 +242,25 @@ export class Renderer {
   private lastX = 0;
   private lastZ = 0;
 
-  /** Point the camera, converting the sim's yaw convention to Three's. */
+  /**
+   * Point the camera, converting the sim's yaw convention to Three's.
+   *
+   * The sim treats yaw as a compass bearing in the XZ plane: forward is
+   * `(cos yaw, sin yaw)`. A Three.js camera with `rotation.y = t` looks down
+   * `(-sin t, -cos t)`, so the conversion is `t = -yaw - PI/2`, which gives a
+   * look direction of exactly `(cos yaw, sin yaw)`.
+   *
+   * It was `-yaw + PI/2`, which points the camera at `(-cos yaw, -sin yaw)` —
+   * the exact opposite of the way the body walks. W drove you backwards and
+   * the mouse looked the wrong way; the movement code was right all along.
+   */
   private applyLook(yaw: number, pitch: number, shake: THREE.Vector3): void {
     this.camera.position.x += shake.x;
     this.camera.position.y += shake.y;
     this.camera.position.z += shake.z;
     this.camera.rotation.set(0, 0, 0);
     this.camera.rotation.order = 'YXZ';
-    this.camera.rotation.y = -yaw + Math.PI / 2;
+    this.camera.rotation.y = -yaw - Math.PI / 2;
     this.camera.rotation.x = pitch;
   }
 

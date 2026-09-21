@@ -264,6 +264,20 @@ export class AudioEngine {
     src.start(t);
   }
 
+  /**
+   * Release the audio context.
+   *
+   * Browsers permit only a small number of concurrent AudioContexts, so a
+   * match that ends without closing its own leaves the next one unable to
+   * make a sound after a few rounds.
+   */
+  async close(): Promise<void> {
+    for (const id of [...this.voices.keys()]) this.removeVoice(id);
+    if (this.ctx.state !== 'closed') {
+      await this.ctx.close().catch(() => { /* already closing */ });
+    }
+  }
+
   private makePanner(refDistance: number, maxDistance: number): PannerNode {
     const p = this.ctx.createPanner();
     p.panningModel = 'HRTF';

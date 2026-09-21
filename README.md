@@ -184,11 +184,34 @@ That buys three things. It reads as the ghost from behind. It animates. And at
 the catch it lunges *at* the camera in three dimensions — the difference
 between a scare and a picture of one.
 
-Drop a transparent PNG at `public/assets/ghost.png`. Until it is there, a
-procedural spectral face stands in and everything else is identical, so the
-animation and the jumpscare can be tuned without the art. `GHOST_TEXTURE_URL`
-in `render/ghostModel.ts` is the only line that needs to change to point
-somewhere else.
+The texture lives at `public/assets/ghost.png`. What is there now is a
+generated stand-in — a gaunt corpse-pale skull with sunken red eyes and
+irregular fangs, built by `tools/make-ghost.py` from signed distance fields and
+a lighting model rather than drawn shapes, because outlined ellipses give you a
+cartoon and it is the shading that carries the anatomy.
+
+Replace that file with the real artwork whenever it is available; nothing else
+changes, since `GHOST_TEXTURE_URL` in `render/ghostModel.ts` already points
+there. The face is mapped to a curved plane with a clean 0..1 UV square, so a
+transparent PNG lands exactly as drawn.
+
+## A note on what the tests caught
+
+Several bugs in this code were invisible to reading and only fell out of
+measuring:
+
+- The camera faced the opposite way to the movement code, so `W` walked
+  backwards. Found by comparing the camera's forward vector against the sim's
+  for every yaw, not by playing.
+- Dying cut to the spectator orbit on the same frame the jumpscare began, so
+  the scare played out correctly twenty-six metres in the air where nobody
+  could see it.
+- `await audio.resume()` could never settle if the browser declined to start
+  an AudioContext, leaving the game hanging on a black screen — a silent game
+  is bad, a frozen one is much worse.
+- The ghost's face was a patch of `SphereGeometry`, which put it on the side
+  of the head *and* inherited a narrow slice of the sphere's global UVs, so
+  the artwork never showed at all.
 
 ## Not built yet
 

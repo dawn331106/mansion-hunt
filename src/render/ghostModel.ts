@@ -113,8 +113,17 @@ function spectralMaterial(u: Spectral, opts: { dissolveFrom: number; useMap: boo
       void main() {
         float fres = pow(1.0 - abs(dot(normalize(vNormal), normalize(vView))), 2.0);
 
-        vec3 col = mix(uDeep, uColor, fres);
-        float alpha = 0.16 + fres * 0.74;
+        /*
+         * Dark body, bright edge.
+         *
+         * The body first rendered as a pale milky solid, which fought the
+         * face for attention and made the whole figure read as a lamp rather
+         * than a shroud. Keeping the interior nearly black and putting all
+         * the light in the fresnel rim means the eye goes to the face, and
+         * the silhouette still separates from a dark wall.
+         */
+        vec3 col = mix(uDeep, uColor, fres * fres);
+        float alpha = 0.06 + fres * 0.62;
 
         #if USE_MAP_TEX
           if (uHasMap > 0.5) {
@@ -168,8 +177,8 @@ export function createGhost(): GhostModel {
   const u: Spectral = {
     uTime: { value: 0 },
     uPresence: { value: 1 },
-    uColor: { value: new THREE.Color(0xc9c4c0) },
-    uDeep: { value: new THREE.Color(0x2a2226) },
+    uColor: { value: new THREE.Color(0x9aa8ad) },
+    uDeep: { value: new THREE.Color(0x0b0f12) },
     uMap: { value: texture },
     uHasMap: faceReady,
   };
@@ -180,11 +189,22 @@ export function createGhost(): GhostModel {
 
   // --- The shroud: the trailing lower body, widest at the hem. ---
   const shroudProfile: THREE.Vector2[] = [];
-  for (let i = 0; i <= 20; i++) {
-    const t = i / 20;
-    // y runs from -1.25 (the dissolving tail) up to 0.35 (the shoulders).
-    const y = -1.25 + t * 1.6;
-    const r = 0.20 + Math.sin(t * Math.PI * 0.8) * 0.46 + (1 - t) * 0.10;
+  for (let i = 0; i <= 24; i++) {
+    const t = i / 24;
+    // y runs from -1.30 (the dissolving tail) up to 0.38 (the shoulders).
+    const y = -1.30 + t * 1.68;
+    /**
+     * The silhouette.
+     *
+     * The first profile swelled to nearly half a metre of radius in the
+     * middle and tapered at both ends, which from a distance is the exact
+     * outline of a chess pawn — the least frightening shape available. A
+     * figure needs to be narrow at the top and flare downward, so the eye
+     * reads shoulders and hanging cloth rather than a skittle.
+     */
+    const flare = Math.pow(1 - t, 1.25) * 0.46;
+    const shoulder = Math.exp(-(((t - 0.88) / 0.16) ** 2)) * 0.19;
+    const r = 0.17 + flare + shoulder;
     shroudProfile.push(new THREE.Vector2(r, y));
   }
   const shroudGeo = track(new THREE.LatheGeometry(shroudProfile, 28));
@@ -204,7 +224,7 @@ export function createGhost(): GhostModel {
   headGroup.position.y = 0.92;
   body.add(headGroup);
 
-  const headGeo = track(new THREE.SphereGeometry(0.24, 20, 18));
+  const headGeo = track(new THREE.SphereGeometry(0.225, 20, 18));
   const headMat = track(spectralMaterial(u, { dissolveFrom: -0.4, useMap: false }));
   const head = new THREE.Mesh(headGeo, headMat);
   headGroup.add(head);
@@ -217,14 +237,36 @@ export function createGhost(): GhostModel {
    * it turns with the body and is genuinely absent when the ghost faces away
    * — which is what makes turning around and finding it there work at all.
    */
-  const faceGeo = track(new THREE.SphereGeometry(
-    0.245, 20, 18,
-    // A patch of sphere: front-facing only.
-    Math.PI * 0.72, Math.PI * 0.56,
-    Math.PI * 0.22, Math.PI * 0.56,
-  ));
+  /**
+   * The face is a gently curved plane, not a patch of the head sphere.
+   *
+   * A `SphereGeometry` patch was the obvious choice and it was wrong twice
+   * over. Its phi range put the face on the side of the head rather than the
+   * front, and — less obviously — a patch inherits its slice of the sphere's
+   * global UV map, so the texture was sampled through a narrow band instead
+   * of across its whole width. The result was a blank grey head.
+   *
+   * A plane owns a clean 0..1 UV square, so the artwork lands exactly as
+   * drawn. Bowing it forward at the centre keeps it sitting on a face rather
+   * than floating in front of one.
+   */
+  const faceGeo = track(new THREE.PlaneGeometry(0.46, 0.60, 12, 14));
+  {
+    const pos = faceGeo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      const y = pos.getY(i);
+      // Push the middle of the plane out into a shallow dome.
+      const bulge = Math.cos((x / 0.23) * Math.PI * 0.5) * Math.cos((y / 0.30) * Math.PI * 0.5);
+      pos.setZ(i, Math.max(0, bulge) * 0.10);
+    }
+    pos.needsUpdate = true;
+    faceGeo.computeVertexNormals();
+  }
   const faceMat = track(spectralMaterial(u, { dissolveFrom: -1.0, useMap: true }));
   const face = new THREE.Mesh(faceGeo, faceMat);
+  // Sit just proud of the head sphere, facing the model's forward (+Z).
+  face.position.set(0, 0.02, 0.20);
   headGroup.add(face);
 
   // --- The eyes. Drawn while the face is still procedural; hidden once the

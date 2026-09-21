@@ -76,8 +76,9 @@ export function createSurvivor(index: number): SurvivorModel {
     object: group,
     update(s, _time) {
       group.position.set(s.pos.x, 0, s.pos.z);
-      // Three.js yaw is measured the other way round from the sim's atan2.
-      group.rotation.y = -s.yaw + Math.PI / 2;
+      // Same conversion as the camera: the sim's yaw is a bearing, so
+      // `-yaw - PI/2` points the model along (cos yaw, sin yaw).
+      group.rotation.y = -s.yaw - Math.PI / 2;
 
       const crouch = s.stance === 'crouch';
       const scale = crouch ? 0.6 : 1.0;
