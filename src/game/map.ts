@@ -339,7 +339,7 @@ export function buildMansion(): Mansion {
   solids.push(furn(6, 18, 0.7, 3.4, 2.4, 'library'));
   solids.push(furn(12, 18, 0.7, 3.4, 2.4, 'library'));
   solids.push(furn(18, 20, 2.4, 0.7, 2.4, 'library'));
-  solids.push(lowFurn(16, 15, 2.0, 0.9, 0.72, 0.82, 'library'));
+  solids.push(lowFurn(20, 16, 2.0, 0.9, 0.72, 0.82, 'library'));
 
   // --- Bedrooms: charpoys and trunks. ---
   solids.push(lowFurn(-22, -16, 1.15, 2.2, 0.54, 0.64, 'bedroom-south'));
@@ -351,7 +351,7 @@ export function buildMansion(): Mansion {
   const hidingSpots: HidingSpot[] = [
     { id: 'almirah-bed-s', kind: 'almirah', x: -26.4, z: -12.0, eyeHeight: 1.5, facing: 0, viewHalfAngle: 0.5, room: 'bedroom-south' },
     { id: 'almirah-bed-n', kind: 'almirah', x: -26.4, z: 12.0, eyeHeight: 1.5, facing: 0, viewHalfAngle: 0.5, room: 'bedroom-north' },
-    { id: 'almirah-kitchen', kind: 'almirah', x: 19.5, z: -20.4, eyeHeight: 1.5, facing: Math.PI / 2, viewHalfAngle: 0.5, room: 'kitchen' },
+    { id: 'almirah-kitchen', kind: 'almirah', x: 17.6, z: -12.0, eyeHeight: 1.5, facing: 0, viewHalfAngle: 0.5, room: 'kitchen' },
     { id: 'almirah-dining', kind: 'almirah', x: 26.4, z: 19.5, eyeHeight: 1.5, facing: Math.PI, viewHalfAngle: 0.5, room: 'dining' },
     { id: 'almirah-puja', kind: 'almirah', x: -20.0, z: 20.4, eyeHeight: 1.5, facing: -Math.PI / 2, viewHalfAngle: 0.5, room: 'puja' },
     { id: 'almirah-library', kind: 'almirah', x: 3.0, z: 20.4, eyeHeight: 1.5, facing: -Math.PI / 2, viewHalfAngle: 0.5, room: 'library' },
@@ -364,7 +364,7 @@ export function buildMansion(): Mansion {
     { id: 'under-charpoy-n', kind: 'under', x: -22, z: 16, eyeHeight: 0.30, facing: 0, viewHalfAngle: 1.4, room: 'bedroom-north' },
     { id: 'under-kitchen-table', kind: 'under', x: 20, z: -14, eyeHeight: 0.38, facing: -Math.PI / 2, viewHalfAngle: 1.4, room: 'kitchen' },
     { id: 'under-dining', kind: 'under', x: 21, z: 15, eyeHeight: 0.40, facing: Math.PI, viewHalfAngle: 1.4, room: 'dining' },
-    { id: 'under-library-desk', kind: 'under', x: 16, z: 15, eyeHeight: 0.38, facing: -Math.PI / 2, viewHalfAngle: 1.4, room: 'library' },
+    { id: 'under-library-desk', kind: 'under', x: 20, z: 16, eyeHeight: 0.38, facing: -Math.PI / 2, viewHalfAngle: 1.4, room: 'library' },
     { id: 'under-bench-w', kind: 'under', x: -10, z: -20.5, eyeHeight: 0.26, facing: Math.PI / 2, viewHalfAngle: 1.3, room: 'verandah' },
     { id: 'under-bench-e', kind: 'under', x: 10, z: -20.5, eyeHeight: 0.26, facing: Math.PI / 2, viewHalfAngle: 1.3, room: 'verandah' },
   ];

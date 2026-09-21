@@ -11,6 +11,7 @@
 import { buildMansion } from '../src/game/map.ts';
 import { blocked } from '../src/game/collision.ts';
 import { buildNavGrid, findPath } from '../src/ai/navigate.ts';
+import { SURVIVOR } from '../src/game/config.ts';
 
 const m = buildMansion();
 const g = buildNavGrid(m, 0.32);
@@ -52,6 +53,29 @@ console.log('exit');
 check('exit', m.exit.x, m.exit.z);
 console.log('doorways');
 for (const d of m.doors) check(`door/${d.id}`, d.x, d.z, { standing: false });
+
+/*
+ * Every hiding spot must be escapable.
+ *
+ * Crawl-under spots sit inside furniture by design, so they are blocked to a
+ * standing body — that is the point. But they must be clear to a *crouched*
+ * one, or climbing out drops the player into geometry they cannot move
+ * through in any direction and the match is over for them. That is exactly
+ * what shipped: `crouchUnder` was in the map data and no collision code read
+ * it, so all seven crawl spots were one-way.
+ */
+console.log('hiding spots escapable');
+for (const h of m.hidingSpots) {
+  const crouched = blocked(m, h.x, h.z, SURVIVOR.radius, SURVIVOR.crouchEyeHeight);
+  const standing = blocked(m, h.x, h.z, SURVIVOR.radius, SURVIVOR.eyeHeight);
+  if (crouched) {
+    bad++;
+    console.log(`  FAIL ${h.id} is blocked even when crouched — cannot be left`);
+  } else if (h.kind === 'under' && !standing) {
+    bad++;
+    console.log(`  FAIL ${h.id} is an 'under' spot but nothing is above it`);
+  }
+}
 
 const area = (m.bounds.maxX - m.bounds.minX) * (m.bounds.maxZ - m.bounds.minZ);
 console.log(`\n${m.solids.length} solids, ${m.doors.length} doors, ${m.hidingSpots.length} hiding spots`);

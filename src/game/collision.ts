@@ -9,6 +9,16 @@ import type { Mansion, Solid } from './map.js';
  * under. No separate "crouch tunnel" geometry is needed.
  */
 
+/**
+ * How low a crouched body gets when crawling under something.
+ *
+ * Lower than the crouched eye height, because crawling under a table is not
+ * the same posture as crouching in the open — you put your head down. Every
+ * `crouchUnder` gap in the map is above this — the lowest is the verandah
+ * benches at 0.48m, and `tools/checkmap.mjs` asserts that stays true.
+ */
+const CRAWL_HEIGHT = 0.42;
+
 /** Vertical span a body occupies, given its eye height. */
 function bodyTop(eyeHeight: number): number {
   // The crown sits a little above the eyes.
@@ -19,7 +29,23 @@ function bodyTop(eyeHeight: number): number {
  * Does a body at (x, z) with this radius and eye height overlap the solid?
  */
 function overlaps(s: Solid, x: number, z: number, r: number, eyeHeight: number): boolean {
-  const top = bodyTop(eyeHeight);
+  /*
+   * How tall the body is for the purpose of this solid.
+   *
+   * A crouched survivor's eyes are at 0.85m, so a naive body top of ~0.97m is
+   * taller than the 0.54m gap under a charpoy — which meant every crawl-under
+   * hiding spot was solid even while crouched. You could be teleported in by
+   * the interact code and then never move again, in any direction.
+   *
+   * `crouchUnder` marks the furniture you are meant to fit beneath, and it had
+   * never been read by anything despite the map claiming otherwise. Against
+   * those solids a crouched body is measured at its real crawling height: low
+   * enough to pass under the top, and still tall enough that standing up
+   * inside one is refused.
+   */
+  const crouching = eyeHeight < 1.1;
+  const top = s.crouchUnder && crouching ? CRAWL_HEIGHT : bodyTop(eyeHeight);
+
   // Vertically disjoint — you pass under it (or, in principle, over it).
   if (s.y0 >= top || s.y1 <= 0) return false;
 

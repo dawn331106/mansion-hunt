@@ -1,5 +1,5 @@
 import { angleDiff, clamp, dist, mulberry32 } from '../core/vec.js';
-import { moveWithCollision, lineOfSight } from './collision.js';
+import { blocked, moveWithCollision, lineOfSight } from './collision.js';
 import { GHOST, MATCH, PULSE, SURVIVOR } from './config.js';
 import type { Intent } from './intent.js';
 import type { HidingSpot, Mansion } from './map.js';
@@ -149,8 +149,19 @@ function stepSurvivor(
     }
     // A short lockout stops interact from toggling every frame it is held.
     if (intent.interact && state.time - s.hidden.since > 0.4) {
+      /*
+       * Climbing out.
+       *
+       * The stance you come out in has to match where you were: crawling out
+       * from under a charpoy leaves you on your hands and knees, but stepping
+       * out of an almirah leaves you standing. Forcing a crouch either way
+       * meant an almirah dumped you into a crouch you had not asked for, and
+       * — worse, before `crouchUnder` was honoured by collision — dropped you
+       * into geometry you could not then move through in any direction.
+       */
+      const spotNow = mansion.hidingSpots.find((h) => h.id === s.hidden!.spotId);
       s.hidden = null;
-      s.stance = 'crouch';
+      s.stance = spotNow?.kind === 'under' ? 'crouch' : 'stand';
       ev.hideChanged.push({ survivorId: s.id, spotId: null });
     }
     return;
@@ -159,9 +170,19 @@ function stepSurvivor(
   s.yaw = intent.yaw;
   s.pitch = clamp(intent.pitch, -1.4, 1.4);
 
-  // --- Stance. Crouch is held; you cannot stand up inside low geometry, but
-  //     the collision test handles that by simply refusing the move. ---
-  s.stance = intent.crouch ? 'crouch' : 'stand';
+  /*
+   * Stance.
+   *
+   * Standing up is only allowed where there is room for it. Without this
+   * check, letting go of crouch while under a charpoy puts a standing body
+   * inside solid furniture, and every direction of travel is then refused —
+   * the player is simply stuck until the ghost arrives. Refusing the stand
+   * instead keeps them crouched until they have crawled clear, which is both
+   * correct and what the geometry already implies.
+   */
+  const wantsStand = !intent.crouch;
+  const canStand = !blocked(mansion, s.pos.x, s.pos.z, SURVIVOR.radius, SURVIVOR.eyeHeight);
+  s.stance = wantsStand && canStand ? 'stand' : 'crouch';
   const eyeHeight = s.stance === 'crouch' ? SURVIVOR.crouchEyeHeight : SURVIVOR.eyeHeight;
 
   // --- Stamina. Sprinting is a decision with a cost and a recovery penalty. ---
