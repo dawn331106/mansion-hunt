@@ -128,10 +128,21 @@ function spectralMaterial(u: Spectral, opts: { dissolveFrom: number; useMap: boo
         #if USE_MAP_TEX
           if (uHasMap > 0.5) {
             vec4 tex = texture2D(uMap, vUv);
-            // The artwork supplies the colour and the cut-out; the shader
-            // supplies the glow at the edges, so it still looks spectral.
-            col = mix(tex.rgb, tex.rgb * uColor * 1.7, fres * 0.55);
-            alpha = tex.a * (0.72 + fres * 0.34);
+            /*
+             * The artwork is the face: show it, do not tint it.
+             *
+             * This first multiplied the texture by the spectral colour and
+             * faded it by fresnel, which in a house lit this dimly left the
+             * face a barely-visible smudge — all the work of drawing it was
+             * thrown away by the shader. The artwork now passes through at
+             * full strength and is lifted a little at the silhouette, so it
+             * reads across a room while still belonging to the body.
+             */
+            col = tex.rgb * (1.25 + fres * 0.55);
+            alpha = tex.a * (0.94 + fres * 0.06);
+            // Skip the dissolve and ripple below: the face is not cloth.
+            gl_FragColor = vec4(col, alpha * uPresence);
+            return;
           }
         #endif
 
@@ -224,7 +235,7 @@ export function createGhost(): GhostModel {
   headGroup.position.y = 0.92;
   body.add(headGroup);
 
-  const headGeo = track(new THREE.SphereGeometry(0.225, 20, 18));
+  const headGeo = track(new THREE.SphereGeometry(0.19, 18, 16));
   const headMat = track(spectralMaterial(u, { dissolveFrom: -0.4, useMap: false }));
   const head = new THREE.Mesh(headGeo, headMat);
   headGroup.add(head);
@@ -250,14 +261,14 @@ export function createGhost(): GhostModel {
    * drawn. Bowing it forward at the centre keeps it sitting on a face rather
    * than floating in front of one.
    */
-  const faceGeo = track(new THREE.PlaneGeometry(0.46, 0.60, 12, 14));
+  const faceGeo = track(new THREE.PlaneGeometry(0.62, 0.72, 12, 14));
   {
     const pos = faceGeo.attributes.position;
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
       const y = pos.getY(i);
       // Push the middle of the plane out into a shallow dome.
-      const bulge = Math.cos((x / 0.23) * Math.PI * 0.5) * Math.cos((y / 0.30) * Math.PI * 0.5);
+      const bulge = Math.cos((x / 0.31) * Math.PI * 0.5) * Math.cos((y / 0.36) * Math.PI * 0.5);
       pos.setZ(i, Math.max(0, bulge) * 0.10);
     }
     pos.needsUpdate = true;
@@ -266,7 +277,7 @@ export function createGhost(): GhostModel {
   const faceMat = track(spectralMaterial(u, { dissolveFrom: -1.0, useMap: true }));
   const face = new THREE.Mesh(faceGeo, faceMat);
   // Sit just proud of the head sphere, facing the model's forward (+Z).
-  face.position.set(0, 0.02, 0.20);
+  face.position.set(0, 0.04, 0.21);
   headGroup.add(face);
 
   // --- The eyes. Drawn while the face is still procedural; hidden once the
