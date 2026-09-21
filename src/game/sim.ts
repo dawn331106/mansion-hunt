@@ -27,10 +27,15 @@ export interface StepEvents {
   escaped: { survivorId: string } | null;
   /** Someone entered or left a hiding spot. */
   hideChanged: { survivorId: string; spotId: string | null }[];
+  /** The ghost laid eyes on a survivor who was not already spotted. */
+  spotted: { survivorId: string } | null;
 }
 
 function noEvents(): StepEvents {
-  return { caught: [], footsteps: [], pulsed: false, keyTaken: null, escaped: null, hideChanged: [] };
+  return {
+    caught: [], footsteps: [], pulsed: false, keyTaken: null,
+    escaped: null, hideChanged: [], spotted: null,
+  };
 }
 
 /** Per-actor step timers, kept outside the state so the state stays plain data. */
@@ -74,6 +79,8 @@ export function createMatch(
     yaw: -Math.PI / 2,
     pitch: 0,
     lastCatchAt: -999,
+    lastSawAt: -999,
+    spottedId: null,
     isBot: opts.humanRole !== 'ghost',
   };
 
@@ -261,7 +268,28 @@ function stepGhost(
   // is held to exactly the same rule.
   if (state.time < MATCH.ghostHeadStart) return;
 
-  const speed = intent.sprint ? GHOST.sprintSpeed : GHOST.walkSpeed;
+  /**
+   * Can the ghost see anyone right now?
+   *
+   * This drives chase speed, and it lives in the simulation rather than in the
+   * input layer on purpose: sprint has to be earned by actually spotting
+   * someone, whether the ghost is a bot or a human holding shift. A ghost that
+   * can run whenever it likes is just a faster ghost, and the whole point of
+   * slowing it down was to make being seen the thing that changes the game.
+   */
+  const seen = spottedSurvivor(state, mansion, g);
+  if (seen) {
+    if (g.spottedId !== seen.id || state.time - g.lastSawAt > GHOST.chaseMemory) {
+      ev.spotted = { survivorId: seen.id };
+    }
+    g.lastSawAt = state.time;
+    g.spottedId = seen.id;
+  } else if (state.time - g.lastSawAt > GHOST.chaseMemory) {
+    g.spottedId = null;
+  }
+
+  const chasing = state.time - g.lastSawAt <= GHOST.chaseMemory;
+  const speed = chasing ? GHOST.sprintSpeed : GHOST.walkSpeed;
   const moved = applyMove(mansion, g.pos, g.yaw, intent, speed, GHOST.radius, GHOST.eyeHeight, dt);
 
   if (moved > 0.001 && tickStepClock(g.id, moved, speed, intent.sprint ? 0.38 : 0.6, dt)) {
@@ -284,6 +312,30 @@ function stepGhost(
 }
 
 /**
+ * The nearest survivor the ghost can plainly see, or null.
+ *
+ * Hidden survivors are invisible, and a crouched one is tested at head height
+ * so low furniture actually conceals them — which is what makes crouching
+ * behind a charpoy worth the speed penalty.
+ */
+function spottedSurvivor(state: GameState, mansion: Mansion, g: Ghost): Survivor | null {
+  let best: Survivor | null = null;
+  let bestD: number = GHOST.sightRange;
+  for (const s of state.survivors) {
+    if (!s.alive || s.escaped || s.hidden) continue;
+    const d = dist(g.pos.x, g.pos.z, s.pos.x, s.pos.z);
+    if (d > bestD) continue;
+    const toward = Math.atan2(s.pos.z - g.pos.z, s.pos.x - g.pos.x);
+    if (Math.abs(angleDiff(g.yaw, toward)) > GHOST.sightHalfAngle) continue;
+    const h = s.stance === 'crouch' ? 0.8 : 1.5;
+    if (!lineOfSight(mansion, g.pos.x, g.pos.z, s.pos.x, s.pos.z, h)) continue;
+    bestD = d;
+    best = s;
+  }
+  return best;
+}
+
+/**
  * Who, if anyone, the ghost catches right now.
  *
  * A catch needs range, a facing cone, and line of sight. Hidden survivors are
@@ -296,14 +348,25 @@ function catchTarget(state: GameState, mansion: Mansion, g: Ghost): Survivor | n
 
   for (const s of state.survivors) {
     if (!s.alive || s.escaped) continue;
+
+    /**
+     * Hiding is absolute.
+     *
+     * The ghost could previously open an almirah and take whoever was inside,
+     * which made hiding a delay rather than an escape — you climbed in, heard
+     * it coming, and could do nothing. Now getting inside is a guaranteed
+     * save, and all the tension moves to where it belongs: whether you can
+     * reach a hiding place before it sees you.
+     */
+    if (s.hidden) continue;
+
     const d = dist(g.pos.x, g.pos.z, s.pos.x, s.pos.z);
-    const range = s.hidden ? SURVIVOR.interactRange : GHOST.catchRange;
-    if (d > range) continue;
+    if (d > GHOST.catchRange) continue;
 
     const toward = Math.atan2(s.pos.z - g.pos.z, s.pos.x - g.pos.x);
     if (Math.abs(angleDiff(g.yaw, toward)) > GHOST.catchHalfAngle) continue;
 
-    if (!s.hidden && !lineOfSight(mansion, g.pos.x, g.pos.z, s.pos.x, s.pos.z, 1.2)) continue;
+    if (!lineOfSight(mansion, g.pos.x, g.pos.z, s.pos.x, s.pos.z, 1.2)) continue;
 
     if (d < bestD) { bestD = d; best = s; }
   }

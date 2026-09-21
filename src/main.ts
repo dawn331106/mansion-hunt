@@ -274,6 +274,23 @@ function tick(s: Session, dt: number): void {
     }
   }
 
+  /**
+   * Being seen.
+   *
+   * Only the survivor who was spotted hears the shriek — it is their warning,
+   * not an announcement to the room — and the ghost gets a quieter cue of its
+   * own so a human hunter knows the chase is live.
+   */
+  if (ev.spotted) {
+    if (ev.spotted.survivorId === s.selfId) {
+      s.audio.stinger('spotted');
+      showToast('It has seen you.');
+    } else if (s.role === 'ghost') {
+      const seen = s.state.survivors.find((x) => x.id === ev.spotted!.survivorId);
+      showToast(`You see ${seen?.name ?? 'someone'}.`);
+    }
+  }
+
   if (ev.keyTaken) {
     s.audio.stinger('key');
     showToast(

@@ -5,21 +5,22 @@ import { MATCH } from '../game/config.js';
  * The catch.
  *
  * A jumpscare works or it does not, and what separates the two is almost
- * entirely timing. This runs on a fixed 2.6-second curve with four overlapping
+ * entirely timing. This runs on a fixed 4-second curve with four overlapping
  * stages, none of which the player can interrupt:
  *
  *   0.00-0.08  SEIZE     The camera is torn off its moorings and snapped to
  *                        face the ghost. Control is gone before you register
  *                        that anything happened.
- *   0.05-0.42  LUNGE     The ghost is dragged bodily into the lens — not its
+ *   0.06-0.44  LUNGE     The ghost is dragged bodily into the lens — not its
  *                        own walk, but a hard interpolation from wherever it
  *                        stood to arm's length from the camera — while the
  *                        view shakes and the FOV punches in.
- *   0.36-2.29  HOLD      The face fills the frame and simply stays there.
- *                        This is the longest stage on purpose: at 1.5s total
- *                        the ghost was only ever on screen while moving fast,
- *                        which is exactly when a face cannot be read.
- *   2.24-2.60  COLLAPSE  Hard cut to black, then the spectator view fades up.
+ *   0.36-3.72  HOLD      The face fills the frame and stays there for the
+ *                        whole length of the ghost's roar, shaking you every
+ *                        so often. This is the longest stage by far and it is
+ *                        meant to overstay: you are not being startled, you
+ *                        are being killed.
+ *   3.60-4.00  COLLAPSE  Hard cut to black, then the spectator view fades up.
  *
  * The overlay is a full-screen shader rather than DOM, so it can distort what
  * is actually on screen instead of merely covering it.
@@ -202,18 +203,27 @@ export function createJumpscare(): Jumpscare {
        * longest stage by a wide margin: the ghost arrives, fills the frame,
        * and stays there long enough to be uncomfortable.
        */
-      const seize = smoothstep(0.0, 0.03, t);
-      const lunge = smoothstep(0.02, 0.16, t);
-      const hold = smoothstep(0.14, 0.22, t) * (1 - smoothstep(0.80, 0.88, t));
-      const collapse = smoothstep(0.86, 0.97, t);
+      const seize = smoothstep(0.0, 0.02, t);
+      const lunge = smoothstep(0.015, 0.11, t);
+      const hold = smoothstep(0.09, 0.15, t) * (1 - smoothstep(0.86, 0.93, t));
+      const collapse = smoothstep(0.90, 0.99, t);
 
       // --- Shake. Violent at the lunge, tapering through the hold. Driven by
       //     two out-of-phase sines rather than random, so it reads as an
       //     impact rather than as noise. ---
       // Violent on impact, then a fine tremor through the hold — a scare that
       // shakes at full amplitude for two seconds is unreadable, not scary.
-      const impact = lunge * (1 - smoothstep(0.16, 0.34, t));
-      const shakeAmt = impact * 0.17 + hold * 0.022;
+      const impact = lunge * (1 - smoothstep(0.11, 0.24, t));
+      /*
+       * A slow tremor through the hold, plus a few hard jolts.
+       *
+       * Four seconds of steady shake reads as a bug, and four seconds of
+       * stillness reads as a paused game. The jolts are the ghost shaking
+       * you — spaced so the player never settles into the rhythm.
+       */
+      const jolt = Math.max(0,
+        Math.sin(t * 34) ** 9) * hold * 0.09;
+      const shakeAmt = impact * 0.17 + hold * 0.018 + jolt;
       shake.set(
         Math.sin(elapsed * 71) * shakeAmt,
         Math.sin(elapsed * 53 + 1.3) * shakeAmt,

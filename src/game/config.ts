@@ -49,13 +49,36 @@ export const GHOST = {
   radius: 0.36,
 
   /**
-   * The ghost is faster than a walking survivor but slower than a sprinting
-   * one, so a survivor with stamina can break away — briefly. The chase is a
-   * question of how long your stamina lasts, not whether you are fast enough.
+   * Stalking pace, used whenever the ghost has not seen anyone.
+   *
+   * Slower than a survivor's 2.6 walk, deliberately. A hunter that matches
+   * your speed while it is merely searching turns the whole match into a
+   * chase, and a chase with no lulls stops being frightening after a minute.
+   * At this pace you can walk away from a ghost that has not spotted you,
+   * which makes the moment it *does* spot you mean something.
    */
-  walkSpeed: 3.3,
-  /** Ghosts do not tire; this is the ceiling, always available. */
-  sprintSpeed: 4.3,
+  walkSpeed: 1.9,
+  /**
+   * Chase pace, unlocked only while a survivor is in sight.
+   *
+   * Faster than a survivor's 4.6 sprint, so being seen is genuinely bad: your
+   * stamina buys distance, not escape, and you have to break line of sight or
+   * reach a hiding place rather than simply outrun it.
+   */
+  sprintSpeed: 4.8,
+  /**
+   * How long the ghost keeps chase speed after losing sight.
+   *
+   * Without a tail the ghost would drop to a crawl the instant you rounded a
+   * corner, which is both absurd and trivially exploitable. With it, breaking
+   * line of sight starts a clock rather than ending the chase.
+   */
+  chaseMemory: 3.0,
+
+  /** How far the ghost can spot a survivor, in metres. */
+  sightRange: 17,
+  /** Half-angle of the ghost's vision cone, radians. */
+  sightHalfAngle: 1.0,
 
   /** How close the ghost must be to a survivor for a catch to land. */
   catchRange: 2.0,
@@ -122,10 +145,12 @@ export const MATCH = {
    *
    * 1.5s was too short to register: by the time you had turned to look, the
    * ghost had already lunged and the screen was cutting to black, so the face
-   * you were meant to be frightened by was never actually legible. The extra
-   * second is almost entirely hold time — the part where it fills the frame
-   * and simply stays there, which is what makes a scare uncomfortable rather
-   * than merely loud.
+   * you were meant to be frightened by was never actually legible.
+   *
+   * Four seconds is long for a jumpscare and that is the point — this is not
+   * a flash, it is being killed. The extra time is all hold, running under
+   * the ghost's roar, so the face is in front of you for the whole length of
+   * the scream rather than cutting away halfway through it.
    */
-  jumpscareDuration: 2.6,
+  jumpscareDuration: 4.0,
 } as const;

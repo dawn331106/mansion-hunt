@@ -31,6 +31,8 @@ export class Ambience {
 
   /** 0 = calm, 1 = the ghost is close. Drives how ugly the bed becomes. */
   private dread = 0;
+  /** Context time the current chase layer ends, so it is not restacked. */
+  private panicUntil = 0;
 
   constructor(private readonly ctx: AudioContext, destination: AudioNode) {
     this.out = ctx.createGain();
@@ -267,6 +269,85 @@ export class Ambience {
     if (this.drone) {
       this.drone.gain.gain.setTargetAtTime(0.42 + this.dread * 0.38, t, 1.5);
     }
+  }
+
+  /**
+   * Chase music: the house panicking because you have been seen.
+   *
+   * Everything else here drifts and never resolves, which is right for dread
+   * but wrong for a chase — being hunted needs a pulse, something that tells
+   * your body to move. This adds a fast, hard heartbeat under a rising
+   * dissonant swell, holds it while the chase lasts, and then lets it decay,
+   * so the music going quiet again is itself a piece of information: it means
+   * you got away.
+   */
+  panic(seconds: number): void {
+    if (this.stopped) return;
+    const t = this.ctx.currentTime;
+    // Restarting the layer on every re-spot would stack drones on top of each
+    // other; extend the existing one instead.
+    if (this.panicUntil > t) {
+      this.panicUntil = t + seconds;
+      return;
+    }
+    this.panicUntil = t + seconds;
+
+    const bus = this.ctx.createGain();
+    bus.gain.setValueAtTime(0, t);
+    bus.gain.linearRampToValueAtTime(1, t + 0.25);
+    bus.connect(this.out);
+
+    // --- A tritone swell: the interval the ear reads as alarm. ---
+    for (const [f, level] of [[146.8, 0.10], [207.7, 0.085], [293.7, 0.05]] as const) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.value = f;
+      o.detune.setValueAtTime(-8, t);
+      o.detune.linearRampToValueAtTime(10, t + seconds);
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(600, t);
+      lp.frequency.linearRampToValueAtTime(1700, t + seconds * 0.4);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(level, t + 0.5);
+      g.gain.setValueAtTime(level, t + seconds * 0.72);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + seconds);
+      o.connect(lp).connect(g).connect(bus);
+      o.start(t);
+      o.stop(t + seconds + 0.2);
+    }
+
+    // --- The heartbeat: two thumps a beat apart, accelerating. ---
+    const bpmStart = 96;
+    const bpmEnd = 138;
+    let beat = 0;
+    let at = t + 0.1;
+    while (at < t + seconds) {
+      const k = (at - t) / seconds;
+      const bpm = bpmStart + (bpmEnd - bpmStart) * k;
+      const period = 60 / bpm;
+      const fade = 1 - Math.max(0, (k - 0.75) / 0.25);
+
+      for (const [off, amp] of [[0, 0.30], [period * 0.32, 0.20]] as const) {
+        const bt = at + off;
+        const o = this.ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(86, bt);
+        o.frequency.exponentialRampToValueAtTime(38, bt + 0.13);
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(amp * fade, bt);
+        g.gain.exponentialRampToValueAtTime(0.0005, bt + 0.21);
+        o.connect(g).connect(bus);
+        o.start(bt);
+        o.stop(bt + 0.26);
+      }
+      at += period;
+      beat++;
+      if (beat > 400) break;
+    }
+
+    setTimeout(() => bus.disconnect(), (seconds + 1) * 1000);
   }
 
   /** Duck the bed, for the moment a scare owns the screen. */

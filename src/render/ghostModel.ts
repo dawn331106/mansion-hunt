@@ -154,7 +154,18 @@ function spectralMaterial(u: Spectral, opts: { dissolveFrom: number; useMap: boo
             // uLunge lifts the face during a jumpscare. The house is lit at
             // the edge of visibility by design, which is right for hunting
             // and wrong for the one shot where the art has to be legible.
-            col = tex.rgb * (1.25 + fres * 0.55 + uLunge * 2.6);
+            /*
+             * Sit the face on the body rather than in front of it.
+             *
+             * A flat 1.25x brightness made the face a lit cut-out floating
+             * over a dark gown — the give-away that it was a texture on a
+             * plane. Darkening it toward the silhouette lets it fall into the
+             * same shadow the body is in, and the vertical gradient means the
+             * jaw is dimmer than the brow, as it would be under the house's
+             * overhead light.
+             */
+            float shade = 1.05 + fres * 0.30 + (1.0 - vUv.y) * -0.14;
+            col = tex.rgb * (shade + uLunge * 2.2);
             alpha = tex.a * (0.94 + fres * 0.06);
             // Skip the dissolve and ripple below: the face is not cloth.
             gl_FragColor = vec4(col, alpha * uPresence);
@@ -306,6 +317,7 @@ export function createGhost(): GhostModel {
   }
   const bodyMat = track(bodyMaterial(u, bodyTexture, bodyReady));
   const torso = new THREE.Mesh(bodyGeo, bodyMat);
+  torso.renderOrder = 5;
   // Panel centre sits below the head (pivot 1.15 + 0.92 = 2.07m).
   torso.position.y = -0.10;
   body.add(torso);
@@ -347,10 +359,19 @@ export function createGhost(): GhostModel {
   headGroup.position.y = 0.92;
   body.add(headGroup);
 
-  const headGeo = track(new THREE.SphereGeometry(0.19, 18, 16));
-  const headMat = track(spectralMaterial(u, { dissolveFrom: -0.4, useMap: false }));
-  const head = new THREE.Mesh(headGeo, headMat);
-  headGroup.add(head);
+  /*
+   * There is no head sphere.
+   *
+   * One used to sit behind the face plane to give the skull volume, and it
+   * was the single most artificial thing in the model: a hard black disc
+   * covering most of the face. Switching it to `BackSide` did not help, and
+   * neither did render order — with `depthWrite` off on every part, the
+   * camera simply sees the inside of the sphere's far wall straight through
+   * the transparent near one.
+   *
+   * The face plane is already bowed into a dome, so it carries its own
+   * volume. Nothing needs to be behind it.
+   */
 
   /**
    * The face plate: where the artwork lands.
@@ -388,6 +409,16 @@ export function createGhost(): GhostModel {
   }
   const faceMat = track(spectralMaterial(u, { dissolveFrom: -1.0, useMap: true }));
   const face = new THREE.Mesh(faceGeo, faceMat);
+  /*
+   * Draw the face last.
+   *
+   * Every part of this model has `depthWrite: false`, so depth testing cannot
+   * order them and three.js falls back on scene order — which put the dark
+   * head and neck shells on top of the face and left a black disc over it.
+   * An explicit render order is the only thing that guarantees the face is
+   * painted over its own skull rather than under it.
+   */
+  face.renderOrder = 10;
   // Sit just proud of the head sphere, facing the model's forward (+Z).
   face.position.set(0, 0.04, 0.21);
   headGroup.add(face);
@@ -404,6 +435,7 @@ export function createGhost(): GhostModel {
       e.position.set(dx, 0.03, 0.225);
       eyes.add(e);
     }
+    eyes.renderOrder = 11;
     headGroup.add(eyes);
   }
 

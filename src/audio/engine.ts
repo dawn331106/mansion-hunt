@@ -179,16 +179,88 @@ export class AudioEngine {
   }
 
   /** A non-positional stinger: the jumpscare, the key pickup, the pulse. */
-  stinger(kind: 'jumpscare' | 'pulse' | 'key' | 'hide' | 'unhide' | 'escape'): void {
+  stinger(kind: 'jumpscare' | 'pulse' | 'key' | 'hide' | 'unhide' | 'escape' | 'spotted'): void {
     const t = this.ctx.currentTime;
     switch (kind) {
       case 'jumpscare': this.jumpscareStinger(t); break;
+      case 'spotted': this.spottedStinger(t); break;
       case 'pulse': this.tone(t, 180, 0.5, 0.18, 'sine'); break;
       case 'key': this.tone(t, 880, 0.25, 0.16, 'triangle'); break;
       case 'hide': this.noiseBurst(t, 0.16, 0.2, 900); break;
       case 'unhide': this.noiseBurst(t, 0.14, 0.18, 1200); break;
       case 'escape': this.tone(t, 520, 0.7, 0.2, 'sine'); break;
     }
+  }
+
+  /**
+   * Being seen.
+   *
+   * The moment the ghost's eyes land on you is the most important information
+   * the game can give a survivor, and with no map and no UI indicator it has
+   * to be carried entirely by sound. This is a rising shriek — a fast upward
+   * sweep with a hard attack — over a low swell, which reads as *something
+   * has noticed you* rather than as a hit or a hurt.
+   *
+   * It plays for the survivor who was spotted, not for the ghost. The ghost
+   * already knows.
+   */
+  private spottedStinger(t: number): void {
+    // 1. The shriek: two detuned saws swept up fast, then choked.
+    for (const [base, detune] of [[520, 0], [523, 14]] as const) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.detune.value = detune;
+      o.frequency.setValueAtTime(base * 0.55, t);
+      o.frequency.exponentialRampToValueAtTime(base * 2.6, t + 0.28);
+      o.frequency.exponentialRampToValueAtTime(base * 1.7, t + 0.85);
+
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(900, t);
+      bp.frequency.exponentialRampToValueAtTime(2600, t + 0.3);
+      bp.Q.value = 3.5;
+
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.16, t + 0.03);
+      g.gain.setValueAtTime(0.16, t + 0.30);
+      g.gain.exponentialRampToValueAtTime(0.0008, t + 1.0);
+
+      o.connect(bp).connect(g).connect(this.ui);
+      o.start(t);
+      o.stop(t + 1.05);
+    }
+
+    // 2. A low swell underneath, so it lands in the chest as well as the ear.
+    const sub = this.ctx.createOscillator();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(70, t);
+    sub.frequency.linearRampToValueAtTime(52, t + 1.1);
+    const sg = this.ctx.createGain();
+    sg.gain.setValueAtTime(0, t);
+    sg.gain.linearRampToValueAtTime(0.32, t + 0.10);
+    sg.gain.exponentialRampToValueAtTime(0.001, t + 1.3);
+    sub.connect(sg).connect(this.ui);
+    sub.start(t);
+    sub.stop(t + 1.35);
+
+    // 3. A noise slap on the transient, for the flinch.
+    const len = Math.floor(this.ctx.sampleRate * 0.25);
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 1200;
+    const ng = this.ctx.createGain();
+    ng.gain.value = 0.2;
+    src.connect(hp).connect(ng).connect(this.ui);
+    src.start(t);
+
+    // The house holds its breath, then comes back louder.
+    this.ambience?.panic(6.0);
   }
 
   /**
@@ -200,7 +272,8 @@ export class AudioEngine {
    */
   private jumpscareStinger(t: number): void {
     // The house goes quiet while the scare has the screen.
-    this.ambience?.duck(2.6);
+    this.ambience?.duck(4.2);
+    this.ghostRoar(t);
     // 1. The transient: filtered noise, fast attack, immediate.
     const noise = this.ctx.createBufferSource();
     const len = Math.floor(this.ctx.sampleRate * 1.4);
@@ -255,6 +328,121 @@ export class AudioEngine {
     this.world.gain.setValueAtTime(this.world.gain.value, t);
     this.world.gain.linearRampToValueAtTime(0.12, t + 0.05);
     this.world.gain.linearRampToValueAtTime(1.0, t + 2.2);
+  }
+
+  /**
+   * The ghost's roar — the "arrrgh" as it takes you.
+   *
+   * Synthesised rather than a recording, because a sampled scream is instantly
+   * recognisable as a stock asset and stops being frightening the second time
+   * you hear it. This is built the way a voice is: a buzzing source at roughly
+   * vocal-fold frequency, shaped by two formant filters to make it read as a
+   * throat rather than a synthesiser, with the pitch falling as it tears.
+   *
+   * It runs long and deliberately overstays, because the point is that
+   * something has hold of you and is not finished.
+   */
+  private ghostRoar(t: number): void {
+    const dur = 3.4;
+
+    // --- The voice source: a harsh saw, pitch dropping as it strains. ---
+    const bus = this.ctx.createGain();
+    bus.gain.setValueAtTime(0, t);
+    bus.gain.linearRampToValueAtTime(1.0, t + 0.06);
+    bus.gain.setValueAtTime(1.0, t + dur * 0.62);
+    bus.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    bus.connect(this.ui);
+
+    for (const [mult, level, detune] of [[1, 0.5, 0], [1.005, 0.4, 9], [0.5, 0.3, -6]] as const) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.detune.value = detune;
+      const f0 = 118 * mult;
+      // Up into the scream, then a long fall as it gives out.
+      o.frequency.setValueAtTime(f0 * 0.8, t);
+      o.frequency.exponentialRampToValueAtTime(f0 * 1.45, t + 0.18);
+      o.frequency.exponentialRampToValueAtTime(f0 * 0.55, t + dur);
+
+      const g = this.ctx.createGain();
+      g.gain.value = level;
+      o.connect(g).connect(bus);
+      o.start(t);
+      o.stop(t + dur + 0.1);
+    }
+
+    // --- Formants: two resonant peaks are what make noise sound like a
+    //     throat. These sit roughly where a shouted vowel does, and drift
+    //     downward so the cry sags as it goes on. ---
+    const shaped = this.ctx.createGain();
+    for (const [freq, q, gain] of [[620, 7, 1.0], [1180, 9, 0.7], [2500, 6, 0.35]] as const) {
+      const f = this.ctx.createBiquadFilter();
+      f.type = 'bandpass';
+      f.frequency.setValueAtTime(freq, t);
+      f.frequency.exponentialRampToValueAtTime(freq * 0.62, t + dur);
+      f.Q.value = q;
+      const g = this.ctx.createGain();
+      g.gain.value = gain;
+      bus.connect(f).connect(g).connect(shaped);
+    }
+
+    // --- Tear: hard saturation, so it distorts like a voice pushed past
+    //     what it can produce. ---
+    const shaper = this.ctx.createWaveShaper();
+    const curve = new Float32Array(new ArrayBuffer(1024 * 4));
+    for (let i = 0; i < 1024; i++) {
+      const x = (i / 1023) * 2 - 1;
+      curve[i] = Math.tanh(x * 3.6);
+    }
+    shaper.curve = curve;
+    shaper.oversample = '2x';
+
+    // --- Breath: noise under the voice, so it has air in it. ---
+    const len = Math.floor(this.ctx.sampleRate * dur);
+    const nb = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const nd = nb.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < len; i++) {
+      last = last * 0.6 + (Math.random() * 2 - 1) * 0.4;
+      // Rasping amplitude, so the breath is ragged rather than smooth.
+      const env = Math.pow(1 - i / len, 1.4) * (0.7 + 0.3 * Math.sin(i * 0.0021));
+      nd[i] = last * env;
+    }
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = nb;
+    const nf = this.ctx.createBiquadFilter();
+    nf.type = 'bandpass';
+    nf.frequency.value = 1500;
+    nf.Q.value = 1.2;
+    const ng = this.ctx.createGain();
+    ng.gain.value = 0.30;
+
+    // --- A long, dark tail: the house keeping the sound. ---
+    const verb = this.ctx.createConvolver();
+    const vlen = Math.floor(this.ctx.sampleRate * 2.4);
+    const vb = this.ctx.createBuffer(2, vlen, this.ctx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = vb.getChannelData(ch);
+      let l = 0;
+      for (let i = 0; i < vlen; i++) {
+        l = l * 0.7 + (Math.random() * 2 - 1) * 0.3;
+        d[i] = l * Math.pow(1 - i / vlen, 2.8);
+      }
+    }
+    verb.buffer = vb;
+    const wet = this.ctx.createGain();
+    wet.gain.value = 0.45;
+    const dry = this.ctx.createGain();
+    dry.gain.value = 0.85;
+
+    const outG = this.ctx.createGain();
+    outG.gain.value = 0.62;
+
+    shaped.connect(shaper);
+    noise.connect(nf).connect(ng).connect(shaper);
+    shaper.connect(dry).connect(outG);
+    shaper.connect(verb).connect(wet).connect(outG);
+    outG.connect(this.ui);
+    noise.start(t);
   }
 
   private tone(t: number, freq: number, dur: number, vol: number, type: OscillatorType): void {

@@ -49,6 +49,15 @@ export interface Ghost {
   pitch: number;
   /** Sim time of the last catch attempt, for the cooldown. */
   lastCatchAt: number;
+  /**
+   * Sim time the ghost last had a survivor in plain sight.
+   *
+   * Chase speed is unlocked from this rather than from the sprint key, so a
+   * human ghost cannot simply hold shift across an empty house.
+   */
+  lastSawAt: number;
+  /** Who it last saw, so the UI and audio can react to the spot. */
+  spottedId: string | null;
   isBot: boolean;
 }
 
