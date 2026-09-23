@@ -960,10 +960,14 @@ function resize(): void {
     o.traverse((n: unknown) => {
       const node = n as {
         type?: string; visible?: boolean; name?: string;
-        material?: { uniforms?: Record<string, { value: unknown }>; opacity?: number; transparent?: boolean };
+        material?: {
+          uniforms?: Record<string, { value: unknown }>;
+          userData?: { uniforms?: Record<string, { value: unknown }> };
+          opacity?: number; transparent?: boolean;
+        };
       };
       if (!node.material) return;
-      const u = node.material.uniforms ?? {};
+      const u = node.material.uniforms ?? node.material.userData?.uniforms ?? {};
       out.push({
         type: node.type, visible: node.visible,
         uReady: (u.uReady?.value as number) ?? null,

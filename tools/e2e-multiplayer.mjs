@@ -155,19 +155,18 @@ try {
 
   // --- The ghost is visible to the survivor ------------------------------
   /*
-   * The ghost's body discards every fragment until its texture has decoded,
-   * which is the right call for runtime-loaded art — a white slab where a face
-   * should be is worse than a moment's wait. It does mean a 404 makes the
-   * hunter invisible rather than ugly, and that is exactly what a wrong base
-   * path caused on Pages: the survivor was alone in the house with something
-   * it could not see.
+   * The ghost is a model loaded at runtime, and until it arrives there is
+   * nothing to draw. A 404 therefore makes the hunter invisible rather than
+   * ugly, and that is exactly what a wrong base path caused on Pages: the
+   * survivor was alone in the house with something it could not see.
    *
-   * So this checks the uniforms that gate the body, not just that an object
-   * exists: `uReady` at 0 is an invisible ghost however correct its position.
+   * So this checks that the model's materials exist and report `uReady` at 1,
+   * not just that an object exists: an empty group is an invisible ghost
+   * however correct its position.
    */
   const mats = await joinPage.evaluate(() => window.__mh.ghostMaterials());
   const gated = mats.filter((m) => m.uReady !== null);
-  check('ghost body textures decoded on the client',
+  check('ghost model loaded on the client',
     gated.length > 0 && gated.every((m) => m.uReady === 1),
     gated.map((m) => `uReady=${m.uReady}`).join(' ') || 'no gated materials found');
 
@@ -176,7 +175,7 @@ try {
     JSON.stringify(view));
 
   // --- Asset 404s --------------------------------------------------------
-  const assetErrors = joinErrors.filter((e) => /ghost\.png|ghost-body\.png|404/.test(e));
+  const assetErrors = joinErrors.filter((e) => /ghost\.glb|404/.test(e));
   check('no asset 404s on the client', assetErrors.length === 0,
     assetErrors.slice(0, 3).join(' | ') || 'none');
 

@@ -176,24 +176,28 @@ on another machine.
 ## The ghost's artwork
 
 The ghost is **not** a billboard sprite. A camera-facing image is cheap, but it
-has no back, it cannot turn away from you, and it cannot lunge. Instead the
-artwork is a texture on real geometry: a face plate on a built head, over a
-torso, arms and a trailing shroud that sway, breathe and drift independently.
+has no back, it cannot turn away from you, and it cannot lunge. Instead it is a
+rigged, animated 3D model, `public/assets/ghost.glb`: a sculpted head wearing
+the face art from `public/assets/ghot.webp`, a hood, a ragged mantle, a
+tattered floor-length shroud and long clawed hands, on a 22-bone skeleton.
 
-That buys three things. It reads as the ghost from behind. It animates. And at
-the catch it lunges *at* the camera in three dimensions — the difference
-between a scare and a picture of one.
+It has three animations. **Idle** floats and sways, and the head twitches.
+**Chase** leans in with the arms reaching and the shroud streaming behind; the
+game blends between the two by how fast the ghost is actually moving. **Lunge**
+flings the arms wide and then grabs, and the jumpscare scrubs it with its own
+0..1 lunge value, so the catch happens in the scene, in three dimensions.
 
-The texture lives at `public/assets/ghost.png`. What is there now is a
-generated stand-in — a gaunt corpse-pale skull with sunken red eyes and
-irregular fangs, built by `tools/make-ghost.py` from signed distance fields and
-a lighting model rather than drawn shapes, because outlined ellipses give you a
-cartoon and it is the shading that carries the anatomy.
+The model is built entirely by a script, in Blender:
 
-Replace that file with the real artwork whenever it is available; nothing else
-changes, since `GHOST_TEXTURE_URL` in `render/ghostModel.ts` already points
-there. The face is mapped to a curved plane with a clean 0..1 UV square, so a
-transparent PNG lands exactly as drawn.
+    E:/Blender/blender.exe --background --factory-startup --python tools/build-ghost.py
+
+It sculpts the head so its sockets, cheeks and mouth sit under the matching
+features of the art, projects the art onto it (levelled, since it is tilted
+about 16 degrees in its frame), bakes colour and ambient occlusion to textures
+with Cycles, rigs and animates it, and exports the GLB. It is deterministic, so
+to change the ghost, or to swap in new face art, edit the script or replace
+`ghot.webp` and re-run it. Pass `-- out.glb preview_dir` to also render
+turnaround and pose previews.
 
 ## A note on what the tests caught
 
