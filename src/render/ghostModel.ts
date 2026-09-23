@@ -101,7 +101,7 @@ function spectral(mat: THREE.MeshStandardMaterial, u: GhostUniforms): void {
         }`)
       .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
         // The hem dissolves into the floor; presence dissolves everything.
-        float ghostFade = smoothstep(0.02, 0.42, vRestY) * uPresence;
+        float ghostFade = smoothstep(0.0, 0.22, vRestY) * uPresence;
         if (ghostFade < 0.999 && ghostFade <= ghostHash(floor(gl_FragCoord.xy))) discard;`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
         float ghostFres = pow(1.0 - abs(dot(normal, normalize(vViewPosition))), 3.0);
@@ -126,6 +126,7 @@ export function createGhost(): GhostModel {
   let chase: THREE.AnimationAction | null = null;
   let lungeAction: THREE.AnimationAction | null = null;
   let headBone: THREE.Object3D | null = null;
+  let modelRoot: THREE.Object3D | null = null;
   let faceAnchor: THREE.Object3D | null = null;
   let eyeMaterial: THREE.MeshStandardMaterial | null = null;
 
@@ -145,6 +146,15 @@ export function createGhost(): GhostModel {
           for (const tex of [mat.map, mat.emissiveMap]) if (tex) disposables.push(tex);
         }
       });
+      /*
+       * Turn the model to face the way the ghost is heading.
+       *
+       * The renderer points the group's local -Z along the ghost's heading;
+       * the model is exported facing +Z. Unturned, it hunted backwards and
+       * lunged at the camera with the back of its hood.
+       */
+      model.rotation.y = Math.PI;
+      modelRoot = model;
       headBone = model.getObjectByName('head') ?? null;
       faceAnchor = model.getObjectByName('FaceAnchor') ?? null;
 
@@ -219,8 +229,9 @@ export function createGhost(): GhostModel {
          * the animation. A ghost whose head is already turned toward you when
          * you round a corner is far worse than one that has to turn.
          */
-        if (headBone) {
-          const local = group.worldToLocal(camera.position.clone());
+        if (headBone && modelRoot) {
+          // Measured in the model's own frame, where the face looks down +Z.
+          const local = modelRoot.worldToLocal(camera.position.clone());
           const rel = Math.atan2(local.x, local.z);
           headBone.rotateY(THREE.MathUtils.clamp(rel, -0.45, 0.45) * (0.3 + lunge * 0.5));
         }
