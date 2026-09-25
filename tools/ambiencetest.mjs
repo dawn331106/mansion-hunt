@@ -1,7 +1,7 @@
 /**
  * Measure the ambient layers against each other.
  *
- * The howl, the dogs and the crying shipped at roughly a sixth of the level
+ * The one-off sounds once shipped at roughly a sixth of the level
  * of the wind bed they have to cut through, which made them inaudible — and
  * nothing caught it, because a gain constant looks perfectly reasonable in
  * source and an event you cannot hear leaves no other trace.
@@ -44,6 +44,8 @@ const results = await page.evaluate(async () => {
      */
     amb.out.gain.cancelScheduledValues(0);
     amb.out.gain.setValueAtTime(0.5, 0);
+    // The calls are recordings; wait for them to decode first.
+    await amb.samplesReady;
     drive(amb, ctx);
 
     const buf = await ctx.startRendering();
@@ -75,20 +77,8 @@ const results = await page.evaluate(async () => {
   // The continuous bed on its own: drone plus wind, no events.
   out.push(await measure('bed (drone + wind)', () => {}, 4));
   out.push(await measure('howl', (a, c) => a.howl(c.currentTime + 0.1), 5));
-  out.push(await measure('hounds', (a, c) => a.hounds(c.currentTime + 0.1), 4));
-  out.push(await measure('crying', (a, c) => a.crying(c.currentTime + 0.1), 4));
-  /*
-   * `playEvent` picks a kind at random, so measuring it once tells you about
-   * whichever sound it happened to choose. Take the loudest of several runs:
-   * the question is whether the quiet end of the range is audible, and a
-   * single sample answers a different question entirely.
-   */
-  let best = null;
-  for (let i = 0; i < 8; i++) {
-    const r = await measure('creak/knock', (a) => a.playEvent(), 3);
-    if (!best || r.peak > best.peak) best = r;
-  }
-  out.push(best);
+  out.push(await measure('owl', (a, c) => a.owl(c.currentTime + 0.1), 4));
+  out.push(await measure('scream', (a, c) => a.scream(c.currentTime + 0.1), 5));
   return out;
 });
 

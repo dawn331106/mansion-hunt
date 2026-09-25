@@ -39,8 +39,6 @@ interface Session {
   hud: Hud;
   audio: AudioEngine;
   toast: { text: string; until: number } | null;
-  /** What the ghost is saying right now, shown while it is audible. */
-  subtitle: { text: string; until: number } | null;
   /** Local microphone, if the player has granted it. */
   mic: MediaStream | null;
 
@@ -364,7 +362,7 @@ async function start(
 
   session = {
     state, role, selfId, input, renderer, hud, audio,
-    toast: null, subtitle: null, mic: null,
+    toast: null, mic: null,
     net, assignments: opts.assignments ?? {},
   };
 
@@ -387,15 +385,13 @@ async function start(
 
   audio.startAmbience();
   /*
-   * The survivors get a theme; the ghost gets the house.
+   * The ghost chants, all match long, from wherever it is.
    *
-   * Asymmetric on purpose. Music is company, and the survivor's problem is
-   * being alone in the dark — a bed under that is a small mercy and a way to
-   * feel the match's shape. The ghost's whole advantage is hearing, so giving
-   * it a soundtrack would both blunt the role and mask the footsteps it hunts
-   * by.
+   * Survivors only. Played as the ghost it would sit on top of your own ears
+   * the whole time, and the ghost's whole advantage is hearing the footsteps
+   * it hunts by.
    */
-  if (role !== 'ghost') void audio.startMusic();
+  if (role !== 'ghost') void audio.startGhostChant(state.ghost.pos.x, state.ghost.pos.z);
 
   resize();
   /*
@@ -412,8 +408,6 @@ async function start(
   accumulator = 0;
   clock = 0;
   endAt = null;
-  // The ghost holds its tongue until the head start is over.
-  nextTauntAt = 6;
   rafId = requestAnimationFrame(frame);
 }
 
@@ -431,8 +425,6 @@ function applySnapshot(state: GameState, events: NetEvents): void {
   if (!s || s.net !== 'client') return;
 
   s.state = state;
-
-  const listener = listenerPos(s);
 
   for (const f of events.footsteps) {
     if (f.actorId !== s.selfId) s.audio.footstep(f.x, f.z, f.volume);
@@ -480,19 +472,6 @@ function applySnapshot(state: GameState, events: NetEvents): void {
     }
   }
 
-  /*
-   * The ghost's taunts come from the host.
-   *
-   * Deciding locally when to speak would have every client choose a different
-   * line at a different moment, so the subtitle on your screen would not match
-   * the voice you heard. The host picks; everyone plays the same one, placed
-   * at the ghost's position so it still fades with distance.
-   */
-  if (events.taunt) {
-    const d = dist(listener.x, listener.z, events.taunt.x, events.taunt.z);
-    const said = s.audio.taunt(s.state.time, events.taunt.x, events.taunt.z, 'hunting', d);
-    if (said) s.subtitle = { text: events.taunt.text, until: s.state.time + 4.0 };
-  }
 }
 
 // --- The loop. -----------------------------------------------------------
@@ -500,8 +479,6 @@ function applySnapshot(state: GameState, events: NetEvents): void {
 let last = 0;
 let accumulator = 0;
 let clock = 0;
-/** Sim time the ghost may next say something. */
-let nextTauntAt = 0;
 /** When the end screen may appear, once the scare has had its moment. */
 let endAt: number | null = null;
 
@@ -543,6 +520,7 @@ function frame(now: number): void {
     }
     const world = client?.interpolated();
     if (world) s.state = world;
+    updateSpatialAudio(s);
   } else if (s.input.isLocked && s.state.phase === 'playing') {
     // Solo and host both simulate. The game only runs while the pointer is
     // locked, which matters in a game where looking away is a disadvantage.
@@ -588,7 +566,6 @@ function frame(now: number): void {
     self,
     prompt: promptFor(s),
     toast: s.toast,
-    subtitle: s.subtitle,
     catchReady: s.role === 'ghost' && s.state.time - s.state.ghost.lastCatchAt >= GHOST.catchCooldown,
   };
   s.hud.draw(s.state, hudState, window.innerWidth, window.innerHeight);
@@ -608,9 +585,6 @@ function frame(now: number): void {
     if (clock >= endAt) { endAt = null; finish(s); }
   }
 }
-
-/** The taunt spoken during the current tick, for the host to broadcast. */
-let spokenThisTick: { text: string; x: number; z: number } | null = null;
 
 function tick(s: Session, dt: number): void {
   const intents = new Map<string, Intent>();
@@ -644,13 +618,9 @@ function tick(s: Session, dt: number): void {
     intents.set('ghost', ghostBotIntent(s.state, mansion, dt));
   }
 
-  spokenThisTick = null;
   const ev = step(s.state, mansion, intents, dt);
 
-
   // --- Turn simulation events into sound and feedback. ---
-  const listener = listenerPos(s);
-
   for (const f of ev.footsteps) {
     // You never hear your own footsteps positionally — they would sit in the
     // middle of your head and drown out everyone else's.
@@ -754,47 +724,6 @@ function tick(s: Session, dt: number): void {
     s.audio.setDread(dread);
   }
 
-  /**
-   * The ghost talks while it hunts.
-   *
-   * Driven from the same information the audio already has — where the ghost
-   * is and how far away the listener is — so it behaves exactly like a
-   * footstep: placed in space, louder and rougher when near, inaudible far
-   * off. What it says depends on what it is doing, which makes the line
-   * itself a piece of information rather than just noise.
-   *
-   * It is silent while a scare is running; the roar owns that moment.
-   */
-  if (!s.renderer.jumpscare.active) {
-    const g = s.state.ghost;
-    const listenDist = dist(listener.x, listener.z, g.pos.x, g.pos.z);
-
-    const chasing = s.state.time - g.lastSawAt <= GHOST.chaseMemory;
-    const mood = chasing ? 'spotted'
-      : listenDist < 9 ? 'close'
-      : s.state.key.taken || s.state.survivors.some((v) => !v.alive) ? 'gloat'
-      : 'hunting';
-
-    // Speak more often when close and during a chase; rarely when idling far
-    // away, or the ghost becomes a chatterbox rather than a presence.
-    // Out of earshot the engine retries quickly on its own, so this gap only
-    // governs how often the ghost speaks when someone can actually hear it.
-    const gap = chasing ? 4.5 : listenDist < 12 ? 6 : 9;
-    if (s.state.time >= nextTauntAt && s.audio.tauntBusyFor(s.state.time) === 0) {
-      const said = s.audio.taunt(s.state.time, g.pos.x, g.pos.z, mood, listenDist);
-      // Only spend the full interval on a line someone actually heard. Out of
-      // earshot the engine has already set a short retry of its own.
-      nextTauntAt = said
-        ? s.state.time + gap + Math.random() * gap * 0.7
-        : s.state.time + 1.2;
-      if (said) {
-        s.subtitle = { text: said, until: s.state.time + 4.0 };
-        // Hosts pass the line on, so everyone hears and reads the same one.
-        spokenThisTick = { text: said, x: g.pos.x, z: g.pos.z };
-      }
-    }
-  }
-
   /*
    * Send the world on.
    *
@@ -803,13 +732,26 @@ function tick(s: Session, dt: number): void {
    * internally; calling it every tick is correct and cheap.
    */
   if (s.net === 'host' && host) {
-    host.maybeSnapshot(dt, s.state, toNetEvents(ev, spokenThisTick));
+    host.maybeSnapshot(dt, s.state, toNetEvents(ev));
   }
 
-  // --- Spatial audio: move the listener and any live voices. ---
+  updateSpatialAudio(s);
+}
+
+/**
+ * Move the listener, the ghost's chant and any live voices.
+ *
+ * Called from the host's tick and from a client's frame alike. It used to run
+ * only in the tick, which a client never runs, so a joining player's ears
+ * stayed wherever the match began and everything they heard was placed
+ * relative to the wrong point.
+ */
+function updateSpatialAudio(s: Session): void {
+  const listener = listenerPos(s);
   s.audio.setListener(listener.x, listener.y, listener.z, listener.yaw, listener.pitch);
+  const g = s.state.ghost;
+  s.audio.moveGhostChant(g.pos.x, g.pos.z);
   if (s.mic && s.role === 'ghost') {
-    const g = s.state.ghost;
     s.audio.moveVoice('self-ghost', g.pos.x, GHOST.eyeHeight, g.pos.z, 0);
   }
 }
@@ -895,7 +837,7 @@ function finish(s: Session): void {
  * snapshots that a survivor died, but not the instant, and the jumpscare has
  * to fire on the frame it happened.
  */
-function toNetEvents(ev: ReturnType<typeof step>, taunt: { text: string; x: number; z: number } | null): NetEvents {
+function toNetEvents(ev: ReturnType<typeof step>): NetEvents {
   return {
     caught: ev.caught.map((c) => ({ survivorId: c.survivorId, x: c.byGhostAt.x, z: c.byGhostAt.z })),
     footsteps: ev.footsteps.map((f) => ({ actorId: f.actorId, x: f.x, z: f.z, volume: f.volume })),
@@ -904,7 +846,6 @@ function toNetEvents(ev: ReturnType<typeof step>, taunt: { text: string; x: numb
     escaped: ev.escaped?.survivorId ?? null,
     hideChanged: ev.hideChanged.map((h) => ({ survivorId: h.survivorId, spotId: h.spotId })),
     spotted: ev.spotted?.survivorId ?? null,
-    taunt,
   };
 }
 

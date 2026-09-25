@@ -1,7 +1,6 @@
 import { AUDIO } from '../game/config.js';
 import { Ambience } from './ambience.js';
 import { createGhostVoice, ensureGhostWorklet, type GhostVoiceChain } from './ghostVoice.js';
-import { pickTaunt, speakTaunt, type Taunt } from './taunts.js';
 
 /**
  * The world's ears.
@@ -15,45 +14,80 @@ import { pickTaunt, speakTaunt, type Taunt } from './taunts.js';
  * other people are. It is a navigation instrument, not decoration.
  */
 
-/** Where a taunt comes from, vertically: roughly the ghost's mouth. */
+/** Where the ghost's chant comes from, vertically: roughly its mouth. */
 const GHOST_MOUTH_HEIGHT = 1.75;
 
 /**
- * The survivors' theme, and the slice of it that loops.
+ * The catch, as a recording.
  *
- * The opening of the track is an introduction — it announces itself, which is
- * the opposite of what a bed should do. The passage from 0:15 is the part that
- * sits still enough to hear a floorboard over, so that is the loop, and the
- * file is only ever played from there.
+ * The file opens with 2.44s of silence before the scream. Played from the top
+ * it would land after the scare was already over, so it is always started
+ * just short of the onset, and the sound hits on the frame the ghost does.
  */
-const MUSIC_URL = 'assets/night-theme.mp3';
-const MUSIC_LOOP_START = 15;
-const MUSIC_LOOP_END = 27;
+const JUMPSCARE_URL = 'assets/jumpscare.mp3';
+const JUMPSCARE_ONSET = 2.42;
+/**
+ * The recording is mastered very hot: it peaks above full scale and averages
+ * around -5dB. At 0.5 it is still the loudest thing the game ever plays,
+ * which is the point, without clipping the master.
+ */
+const JUMPSCARE_GAIN = 0.5;
 
 /**
- * How loud the music sits under everything else.
+ * The ghost's voice: a demon speaking Latin, on a continuous loop.
  *
- * Larger than it looks, because the source file is quiet: the track peaks
- * around 0.11 and averages 0.03, roughly a tenth of a normally mastered one,
- * and that is true of the whole file rather than of the looped passage. A
- * gain under 1 on top of that was inaudible under the ambient bed — the first
- * two attempts here, 0.16 and 0.30, both failed for that reason alone.
- *
- * So this compensates for the file first and sets the balance second. The
- * effective level is what matters: at 0.4 the theme lands around 0.011 RMS,
- * far below the ambient bed at 0.14 and the world bus at 1.0 that carries
- * footsteps and the ghost. It is meant to be only just there — something you
- * notice in a quiet moment and lose the instant anything happens.
- *
- * The ceiling is set by what it must never mask. A footstep at the edge of
- * hearing has to stay the most noticeable new thing in the mix, because with
- * no minimap it is the only warning a survivor gets. If the track is ever
- * replaced with a louder master, this must come down to match.
+ * It replaces the synthesised taunts. The recording fades in over its first
+ * quarter second and out over its last half, so the loop skips both and a
+ * repetition reads as a breath rather than as the track starting over.
  */
-const MUSIC_GAIN = 0.4;
+const CHANT_URL = 'assets/ghost-chant.mp3';
+const CHANT_LOOP_START = 0.25;
+const CHANT_LOOP_END = 26.1;
+/**
+ * The chant's level at the panner.
+ *
+ * The recording is quiet — it peaks around -15dB and averages -34dB — so it
+ * needs real gain to carry across a room. It is not loud next to a footstep
+ * up close; it is the thing you hear first, two rooms away, and track.
+ */
+const CHANT_GAIN = 2.6;
 
-/** Seconds the theme takes to fade up, so it arrives rather than starts. */
-const MUSIC_FADE = 2.5;
+/**
+ * Recorded footsteps: a take of single steps, cut apart at load.
+ *
+ * The file is eight separate footfalls about 0.6s apart. Each is cut out on
+ * its own, from just before its attack to just before the next one begins,
+ * and one is picked at random for every step, so a run never repeats a
+ * sample twice in a row the way a loop would.
+ */
+const FOOTSTEPS_URL = 'assets/footsteps.mp3';
+/** Longest a single cut step may be; the tail past this is room noise. */
+const STEP_MAX_SECONDS = 0.45;
+/**
+ * The recorded steps' level, against the synthesised ones they replace.
+ *
+ * Set to land where the synthesised steps did, measured over each step's
+ * first 100ms (the part that carries): footsteps are the game's main warning
+ * system, and changing their loudness would change how far away people seem.
+ * At 1.1 a cut step peaks just under full scale.
+ */
+const STEP_GAIN = 1.1;
+
+/**
+ * Being spotted, as a recording.
+ *
+ * It replaced the synthesised shriek. The file is mastered to full scale, so
+ * it is brought well under the jumpscare, which has to stay the loudest thing
+ * in the game.
+ */
+const SPOTTED_URL = 'assets/spotted.mp3';
+const SPOTTED_GAIN = 0.4;
+
+/** Resolve a file in `public/` against wherever the game is served from. */
+function assetUrl(path: string): string {
+  const base = import.meta.env.BASE_URL || '/';
+  return (base.endsWith('/') ? base : `${base}/`) + path;
+}
 
 export class AudioEngine {
   readonly ctx: AudioContext;
@@ -70,27 +104,29 @@ export class AudioEngine {
     source: MediaStreamAudioSourceNode | null;
   }>();
 
-  /** Reused footstep buffers, one per surface, generated not loaded. */
-  private readonly stepBuffers: AudioBuffer[] = [];
+  /**
+   * Reused footstep buffers.
+   *
+   * Starts as synthesised steps, so footsteps work from the first frame, and
+   * is swapped for the recorded ones once they have loaded.
+   */
+  private stepBuffers: AudioBuffer[] = [];
+  /** Whether `stepBuffers` holds the recording yet. */
+  private stepsRecorded = false;
 
   /** The house's own voice: drone, wind, creaks. Started on resume. */
   private ambience: Ambience | null = null;
-  /**
-   * The survivors' theme, and the bus that keeps it underneath everything.
-   *
-   * Music is the one sound here that carries no information — every other
-   * cue tells you where something is or what it did, and a bed loud enough
-   * to mask a footstep would be trading the game's only warning system for
-   * atmosphere. So it gets its own gain, set well below the world, and is
-   * never routed through the panner: it is not in the house with you.
-   */
-  private music: { source: AudioBufferSourceNode; gain: GainNode } | null = null;
-  private readonly musicBus: GainNode;
+  /** The decoded jumpscare recording, once it has arrived. */
+  private jumpscareBuffer: AudioBuffer | null = null;
+  /** The decoded spotted recording, once it has arrived. */
+  private spottedBuffer: AudioBuffer | null = null;
+  /** The spotted sound currently playing, so a re-spot or a catch can cut it. */
+  private spottedPlaying: { source: AudioBufferSourceNode; gain: GainNode } | null = null;
 
-  /** Sim time the ghost may next speak, so lines never overlap. */
-  private tauntFreeAt = 0;
-  /** The last line spoken, so it is not immediately repeated. */
-  private lastTaunt: string | null = null;
+  /** The ghost's looping chant, once it is playing. */
+  private chant: { source: AudioBufferSourceNode; panner: PannerNode; gain: GainNode } | null = null;
+  /** Set once the chant has been asked for, so it is only ever started once. */
+  private chantRequested = false;
 
   constructor() {
     this.ctx = new AudioContext();
@@ -98,11 +134,8 @@ export class AudioEngine {
     this.master.gain.value = 0.9;
     this.world = this.ctx.createGain();
     this.ui = this.ctx.createGain();
-    this.musicBus = this.ctx.createGain();
-    this.musicBus.gain.value = MUSIC_GAIN;
     this.world.connect(this.master);
     this.ui.connect(this.master);
-    this.musicBus.connect(this.master);
     this.master.connect(this.ctx.destination);
 
     // Inverse-distance rolloff throughout, which is how real sound behaves and
@@ -112,6 +145,107 @@ export class AudioEngine {
     this.ctx.listener.upZ?.setValueAtTime(0, this.ctx.currentTime);
 
     for (let i = 0; i < 4; i++) this.stepBuffers.push(this.makeFootstep(i));
+    void this.loadJumpscare();
+    void this.loadSpotted();
+    void this.loadFootsteps();
+  }
+
+  /**
+   * Fetch the footstep recording and cut it into single steps.
+   *
+   * If it fails, the synthesised steps simply stay: a survivor who cannot hear
+   * footsteps has lost the only way to know where anyone is.
+   */
+  private async loadFootsteps(): Promise<void> {
+    try {
+      const res = await fetch(assetUrl(FOOTSTEPS_URL));
+      if (!res.ok) return;
+      const steps = this.cutSteps(await this.ctx.decodeAudioData(await res.arrayBuffer()));
+      if (steps.length > 0) {
+        this.stepBuffers = steps;
+        this.stepsRecorded = true;
+      }
+    } catch {
+      /* Keep the synthesised steps. */
+    }
+  }
+
+  /**
+   * Find each footfall in a recording of several and cut it out.
+   *
+   * A step is where the signal jumps above a fifth of the recording's peak
+   * after at least 0.3s of nothing that loud — every footfall has a hard
+   * attack and the gaps between them are quiet, so this is enough. Each cut
+   * starts 5ms before the attack, stops before the next step or after
+   * `STEP_MAX_SECONDS`, is mixed to mono for the panner, and fades out over
+   * its last 60ms so it never ends on a click.
+   */
+  private cutSteps(buf: AudioBuffer): AudioBuffer[] {
+    const rate = buf.sampleRate;
+    const n = buf.length;
+    const mono = new Float32Array(n);
+    for (let c = 0; c < buf.numberOfChannels; c++) {
+      const d = buf.getChannelData(c);
+      for (let i = 0; i < n; i++) mono[i] += d[i] / buf.numberOfChannels;
+    }
+    let peak = 0;
+    for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(mono[i]));
+    if (peak === 0) return [];
+
+    const threshold = peak * 0.2;
+    const gap = Math.floor(rate * 0.3);
+    const onsets: number[] = [];
+    for (let i = 0; i < n; i++) {
+      if (Math.abs(mono[i]) < threshold) continue;
+      if (onsets.length === 0 || i - onsets[onsets.length - 1] > gap) onsets.push(i);
+    }
+
+    const lead = Math.floor(rate * 0.005);
+    const fade = Math.floor(rate * 0.06);
+    return onsets.map((onset, k) => {
+      const start = Math.max(0, onset - lead);
+      const next = k + 1 < onsets.length ? onsets[k + 1] - lead : n;
+      const len = Math.min(next - start, Math.floor(rate * STEP_MAX_SECONDS));
+      const out = this.ctx.createBuffer(1, len, rate);
+      const d = out.getChannelData(0);
+      for (let i = 0; i < len; i++) {
+        const tail = i > len - fade ? (len - i) / fade : 1;
+        d[i] = mono[start + i] * STEP_GAIN * tail;
+      }
+      return out;
+    });
+  }
+
+  /**
+   * Fetch and decode the jumpscare recording up front.
+   *
+   * A catch can come at any moment, and a scare that waits on the network is
+   * not a scare. Decoding works on a suspended context, so this starts at
+   * construction, long before the first click. If it fails the synthesised
+   * stinger plays instead: a silent catch would be worse than either.
+   */
+  /**
+   * Fetch and decode the spotted recording up front, for the same reason as
+   * the jumpscare: it has to land on the frame the ghost sees you.
+   */
+  private async loadSpotted(): Promise<void> {
+    try {
+      const res = await fetch(assetUrl(SPOTTED_URL));
+      if (!res.ok) return;
+      this.spottedBuffer = await this.ctx.decodeAudioData(await res.arrayBuffer());
+    } catch {
+      /* The spot goes unannounced; the chase layer below still starts. */
+    }
+  }
+
+  private async loadJumpscare(): Promise<void> {
+    try {
+      const res = await fetch(assetUrl(JUMPSCARE_URL));
+      if (!res.ok) return;
+      this.jumpscareBuffer = await this.ctx.decodeAudioData(await res.arrayBuffer());
+    } catch {
+      /* Fall back to the synthesised stinger. */
+    }
   }
 
   /** Browsers block audio until a gesture; call this from a click. */
@@ -129,68 +263,6 @@ export class AudioEngine {
    */
   startAmbience(): void {
     if (!this.ambience) this.ambience = new Ambience(this.ctx, this.world);
-  }
-
-  /**
-   * Start the survivors' theme, looping the chosen passage.
-   *
-   * Survivors only: the ghost hears the house, not a soundtrack, and giving
-   * it one would both soften the role and mask the footsteps it hunts by.
-   *
-   * A decode failure is deliberately silent. Music is the one thing here the
-   * game plays fine without, and a missing file should cost atmosphere, not
-   * the match.
-   */
-  async startMusic(): Promise<void> {
-    if (this.music) return;
-    try {
-      const base = import.meta.env.BASE_URL || '/';
-      const url = (base.endsWith('/') ? base : `${base}/`) + MUSIC_URL;
-      const res = await fetch(url);
-      if (!res.ok) return;
-      const buf = await this.ctx.decodeAudioData(await res.arrayBuffer());
-
-      /*
-       * Clamp the loop to what the file actually contains.
-       *
-       * `loopEnd` past the end of a buffer is not an error in the Web Audio
-       * spec — it simply loops the whole thing, so a shorter file than
-       * expected would quietly play the introduction this is meant to skip.
-       */
-      const end = Math.min(MUSIC_LOOP_END, buf.duration);
-      const start = Math.min(MUSIC_LOOP_START, Math.max(0, end - 1));
-
-      const source = this.ctx.createBufferSource();
-      source.buffer = buf;
-      source.loop = true;
-      source.loopStart = start;
-      source.loopEnd = end;
-
-      const gain = this.ctx.createGain();
-      const t = this.ctx.currentTime;
-      gain.gain.setValueAtTime(0, t);
-      gain.gain.linearRampToValueAtTime(1, t + MUSIC_FADE);
-      source.connect(gain).connect(this.musicBus);
-
-      // Begin inside the loop, not at the top of the file.
-      source.start(0, start);
-      this.music = { source, gain };
-    } catch {
-      /* No music is survivable; a thrown error mid-match is not. */
-    }
-  }
-
-  /** Stop the theme, fading out so it does not cut mid-phrase. */
-  stopMusic(): void {
-    const m = this.music;
-    if (!m) return;
-    this.music = null;
-    const t = this.ctx.currentTime;
-    m.gain.gain.cancelScheduledValues(t);
-    m.gain.gain.setValueAtTime(m.gain.gain.value, t);
-    m.gain.gain.linearRampToValueAtTime(0, t + 0.6);
-    try { m.source.stop(t + 0.7); } catch { /* already stopped */ }
-    m.source.onended = () => { m.source.disconnect(); m.gain.disconnect(); };
   }
 
   /** How close the ghost feels, 0..1. Darkens the ambient bed. */
@@ -231,8 +303,11 @@ export class AudioEngine {
     const buf = this.stepBuffers[(Math.random() * this.stepBuffers.length) | 0];
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
-    // Slight random pitch, so a run does not sound like a metronome.
-    src.playbackRate.value = 0.9 + Math.random() * 0.2;
+    // Slight random pitch, so a run does not sound like a metronome. The
+    // recording has variety of its own, so it needs less help.
+    src.playbackRate.value = this.stepsRecorded
+      ? 0.94 + Math.random() * 0.12
+      : 0.9 + Math.random() * 0.2;
 
     const gain = this.ctx.createGain();
     gain.gain.value = volume;
@@ -301,77 +376,49 @@ export class AudioEngine {
   }
 
   /**
-   * The ghost says something, from where the ghost is standing.
+   * Start the ghost's chant, looping from where the ghost is.
    *
    * Routed through a panner exactly like a footstep, so proximity and
    * direction come out of the listener's position rather than a hand-written
-   * volume curve — near is loud and placed, far is faint and vague, and it
-   * fades to nothing past the same range a shout would.
+   * volume curve: it carries across the house faintly and without a clear
+   * bearing, and is loud and placed when the ghost is close. It never stops
+   * while the match runs, so the ghost is always somewhere you can hear.
    *
-   * Returns the subtitle if the line will actually be audible from where the
-   * listener is standing, so the HUD never captions something you cannot hear.
+   * A decode failure is silent: the ghost loses its voice, not the match.
    */
-  taunt(
-    now: number,
-    x: number,
-    z: number,
-    mood: Taunt['mood'],
-    listenerDist: number,
-  ): string | null {
-    if (now < this.tauntFreeAt) return null;
-    if (listenerDist > AUDIO.tauntMaxDistance) {
-      /*
-       * Out of earshot. Retry soon rather than sitting out the full gap.
-       *
-       * Burning the whole interval here meant that in a house forty metres
-       * across the ghost spent nearly every cycle talking to an empty room,
-       * and by the time it was close enough to hear it was mid-cooldown. A
-       * short retry keeps it from stockpiling lines while still letting it
-       * speak promptly once someone is near enough to be frightened.
-       */
-      this.tauntFreeAt = now + 1.2;
-      return null;
+  async startGhostChant(x: number, z: number): Promise<void> {
+    if (this.chantRequested) return;
+    this.chantRequested = true;
+    try {
+      const res = await fetch(assetUrl(CHANT_URL));
+      if (!res.ok) return;
+      const buf = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      if (this.ctx.state === 'closed') return;
+
+      const panner = this.makePanner(AUDIO.chantRefDistance, AUDIO.chantMaxDistance);
+      // A voice carries further than a footfall does; see the config.
+      panner.rolloffFactor = 0.9;
+      this.positionPanner(panner, x, GHOST_MOUTH_HEIGHT, z);
+
+      const gain = this.ctx.createGain();
+      gain.gain.value = CHANT_GAIN;
+
+      const source = this.ctx.createBufferSource();
+      source.buffer = buf;
+      source.loop = true;
+      source.loopStart = Math.min(CHANT_LOOP_START, buf.duration);
+      source.loopEnd = Math.min(CHANT_LOOP_END, buf.duration);
+      source.connect(gain).connect(panner).connect(this.world);
+      source.start(0, source.loopStart);
+      this.chant = { source, panner, gain };
+    } catch {
+      /* No chant is survivable. */
     }
-
-    const line = pickTaunt(mood, this.lastTaunt);
-    this.lastTaunt = line.text;
-
-    const panner = this.makePanner(AUDIO.tauntRefDistance, AUDIO.tauntMaxDistance);
-    /*
-     * A gentler rolloff for the voice than for footsteps.
-     *
-     * The shared 1.6 rolloff is right for a footfall, which should vanish
-     * within a room or two, and quite wrong for a shout down a corridor: at
-     * fifteen metres it left the taunt barely audible, which is most of why
-     * the ghost seemed to be muttering. A voice carries.
-     */
-    panner.rolloffFactor = 0.9;
-    this.positionPanner(panner, x, GHOST_MOUTH_HEIGHT, z);
-
-    /*
-     * Taunts get their own bus, well above the rest of the world.
-     *
-     * A line is the most important sound in the mix when it plays — it is
-     * often the only warning a survivor gets — and it was competing with the
-     * ambient bed on equal terms and losing.
-     */
-    const bus = this.ctx.createGain();
-    bus.gain.value = 3.4;
-    bus.connect(panner);
-    panner.connect(this.world);
-
-    // Closer means a heavier, rougher voice as well as a louder one.
-    const intensity = 1 - Math.min(1, listenerDist / AUDIO.tauntMaxDistance);
-    const seconds = speakTaunt(this.ctx, bus, line, 0.45 + intensity * 0.5);
-    setTimeout(() => { bus.disconnect(); panner.disconnect(); }, (seconds + 2.5) * 1000);
-
-    this.tauntFreeAt = now + seconds + 0.8;
-    return line.text;
   }
 
-  /** How long the ghost is still speaking for, in seconds. */
-  tauntBusyFor(now: number): number {
-    return Math.max(0, this.tauntFreeAt - now);
+  /** Keep the chant at the ghost's mouth as it moves. */
+  moveGhostChant(x: number, z: number): void {
+    if (this.chant) this.positionPanner(this.chant.panner, x, GHOST_MOUTH_HEIGHT, z);
   }
 
   /** A non-positional stinger: the jumpscare, the key pickup, the pulse. */
@@ -393,82 +440,84 @@ export class AudioEngine {
    *
    * The moment the ghost's eyes land on you is the most important information
    * the game can give a survivor, and with no map and no UI indicator it has
-   * to be carried entirely by sound. This is a rising shriek — a fast upward
-   * sweep with a hard attack — over a low swell, which reads as *something
-   * has noticed you* rather than as a hit or a hurt.
+   * to be carried entirely by sound. It is a recording now, in place of the
+   * synthesised shriek.
    *
-   * It plays for the survivor who was spotted, not for the ghost. The ghost
-   * already knows.
+   * A new spot restarts it rather than stacking a second copy, since the
+   * ghost can lose you and find you again inside the recording's four
+   * seconds. It plays for the survivor who was spotted, not for the ghost.
+   * The ghost already knows.
    */
   private spottedStinger(t: number): void {
-    // 1. The shriek: two detuned saws swept up fast, then choked.
-    for (const [base, detune] of [[520, 0], [523, 14]] as const) {
-      const o = this.ctx.createOscillator();
-      o.type = 'sawtooth';
-      o.detune.value = detune;
-      o.frequency.setValueAtTime(base * 0.55, t);
-      o.frequency.exponentialRampToValueAtTime(base * 2.6, t + 0.28);
-      o.frequency.exponentialRampToValueAtTime(base * 1.7, t + 0.85);
-
-      const bp = this.ctx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.setValueAtTime(900, t);
-      bp.frequency.exponentialRampToValueAtTime(2600, t + 0.3);
-      bp.Q.value = 3.5;
-
-      const g = this.ctx.createGain();
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(0.16, t + 0.03);
-      g.gain.setValueAtTime(0.16, t + 0.30);
-      g.gain.exponentialRampToValueAtTime(0.0008, t + 1.0);
-
-      o.connect(bp).connect(g).connect(this.ui);
-      o.start(t);
-      o.stop(t + 1.05);
+    this.cutSpotted(t, 0.05);
+    const buf = this.spottedBuffer;
+    if (buf) {
+      const source = this.ctx.createBufferSource();
+      source.buffer = buf;
+      const gain = this.ctx.createGain();
+      gain.gain.value = SPOTTED_GAIN;
+      source.connect(gain).connect(this.ui);
+      source.start(t);
+      const playing = { source, gain };
+      this.spottedPlaying = playing;
+      source.onended = () => {
+        source.disconnect();
+        gain.disconnect();
+        if (this.spottedPlaying === playing) this.spottedPlaying = null;
+      };
     }
-
-    // 2. A low swell underneath, so it lands in the chest as well as the ear.
-    const sub = this.ctx.createOscillator();
-    sub.type = 'sine';
-    sub.frequency.setValueAtTime(70, t);
-    sub.frequency.linearRampToValueAtTime(52, t + 1.1);
-    const sg = this.ctx.createGain();
-    sg.gain.setValueAtTime(0, t);
-    sg.gain.linearRampToValueAtTime(0.32, t + 0.10);
-    sg.gain.exponentialRampToValueAtTime(0.001, t + 1.3);
-    sub.connect(sg).connect(this.ui);
-    sub.start(t);
-    sub.stop(t + 1.35);
-
-    // 3. A noise slap on the transient, for the flinch.
-    const len = Math.floor(this.ctx.sampleRate * 0.25);
-    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
-    const src = this.ctx.createBufferSource();
-    src.buffer = buf;
-    const hp = this.ctx.createBiquadFilter();
-    hp.type = 'highpass';
-    hp.frequency.value = 1200;
-    const ng = this.ctx.createGain();
-    ng.gain.value = 0.2;
-    src.connect(hp).connect(ng).connect(this.ui);
-    src.start(t);
 
     // The house holds its breath, then comes back louder.
     this.ambience?.panic(6.0);
   }
 
+  /** Fade out the spotted sound, if it is still playing, over `fade` seconds. */
+  private cutSpotted(t: number, fade: number): void {
+    const p = this.spottedPlaying;
+    if (!p) return;
+    this.spottedPlaying = null;
+    p.gain.gain.cancelScheduledValues(t);
+    p.gain.gain.setValueAtTime(p.gain.gain.value, t);
+    p.gain.gain.linearRampToValueAtTime(0, t + fade);
+    try { p.source.stop(t + fade + 0.02); } catch { /* already stopped */ }
+  }
+
   /**
-   * The catch.
+   * The catch: the jumpscare recording, over a ducked world.
+   */
+  private jumpscareStinger(t: number): void {
+    // The house goes quiet while the scare has the screen.
+    this.ambience?.duck(4.2);
+    // A spot seconds before the catch is still playing; the scare owns this.
+    this.cutSpotted(t, 0.12);
+
+    const buf = this.jumpscareBuffer;
+    if (buf) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      const g = this.ctx.createGain();
+      g.gain.value = JUMPSCARE_GAIN;
+      src.connect(g).connect(this.ui);
+      src.start(t, Math.min(JUMPSCARE_ONSET, buf.duration));
+    } else {
+      this.jumpscareSynth(t);
+    }
+
+    // Duck the world so the scare owns the moment, then bring it back.
+    this.world.gain.cancelScheduledValues(t);
+    this.world.gain.setValueAtTime(this.world.gain.value, t);
+    this.world.gain.linearRampToValueAtTime(0.12, t + 0.05);
+    this.world.gain.linearRampToValueAtTime(1.0, t + 2.2);
+  }
+
+  /**
+   * The synthesised catch, for when the recording has not loaded.
    *
    * A hard scare needs three things at once: a transient loud enough to make
    * you flinch, a low sub that you feel rather than hear, and a dissonant tail
    * that keeps the moment going a beat longer than is comfortable.
    */
-  private jumpscareStinger(t: number): void {
-    // The house goes quiet while the scare has the screen.
-    this.ambience?.duck(4.2);
+  private jumpscareSynth(t: number): void {
     this.ghostRoar(t);
     // 1. The transient: filtered noise, fast attack, immediate.
     const noise = this.ctx.createBufferSource();
@@ -518,20 +567,13 @@ export class AudioEngine {
       o.start(t);
       o.stop(t + 1.6);
     }
-
-    // Duck the world so the scare owns the moment, then bring it back.
-    this.world.gain.cancelScheduledValues(t);
-    this.world.gain.setValueAtTime(this.world.gain.value, t);
-    this.world.gain.linearRampToValueAtTime(0.12, t + 0.05);
-    this.world.gain.linearRampToValueAtTime(1.0, t + 2.2);
   }
 
   /**
    * The ghost's roar — the "arrrgh" as it takes you.
    *
-   * Synthesised rather than a recording, because a sampled scream is instantly
-   * recognisable as a stock asset and stops being frightening the second time
-   * you hear it. This is built the way a voice is: a buzzing source at roughly
+   * Part of the synthesised fallback, used only when the jumpscare recording
+   * has not loaded. It is built the way a voice is: a buzzing source at roughly
    * vocal-fold frequency, shaped by two formant filters to make it read as a
    * throat rather than a synthesiser, with the pitch falling as it tears.
    *
@@ -709,7 +751,11 @@ export class AudioEngine {
     }
   }
 
-  /** A short, dry footfall: a filtered noise thump with a little body. */
+  /**
+   * A short, dry footfall: a filtered noise thump with a little body.
+   *
+   * The fallback, used until the recorded steps have loaded.
+   */
   private makeFootstep(variant: number): AudioBuffer {
     const rate = this.ctx.sampleRate;
     const len = Math.floor(rate * 0.18);

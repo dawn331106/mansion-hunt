@@ -159,14 +159,12 @@ export interface NetEvents {
   escaped: string | null;
   hideChanged: { survivorId: string; spotId: string | null }[];
   spotted: string | null;
-  /** What the ghost is saying, if anything, so every client subtitles it. */
-  taunt: { text: string; x: number; z: number } | null;
 }
 
 export function emptyNetEvents(): NetEvents {
   return {
     caught: [], footsteps: [], pulsed: false, keyTaken: null,
-    escaped: null, hideChanged: [], spotted: null, taunt: null,
+    escaped: null, hideChanged: [], spotted: null,
   };
 }
 

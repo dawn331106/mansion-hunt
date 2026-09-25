@@ -22,8 +22,6 @@ export interface HudState {
   prompt: string | null;
   /** Shown briefly after an event: "You have the key", "Caught Rina". */
   toast: { text: string; until: number } | null;
-  /** What the ghost is saying, while it is close enough to hear. */
-  subtitle: { text: string; until: number } | null;
   /** Whether the ghost's catch is off cooldown. */
   catchReady: boolean;
 }
@@ -63,9 +61,6 @@ export class Hud {
 
     if (hud.prompt) this.drawPrompt(c, w, h, hud.prompt);
     if (hud.toast && state.time < hud.toast.until) this.drawToast(c, w, hud.toast.text);
-    if (hud.subtitle && state.time < hud.subtitle.until) {
-      this.drawSubtitle(c, w, h, hud.subtitle.text);
-    }
 
     this.drawSurvivorTally(c, w, h, state, hud.role);
   }
@@ -220,26 +215,6 @@ export class Hud {
     c.textAlign = 'center';
     c.fillStyle = 'rgba(255,255,255,0.85)';
     c.fillText(text, w / 2, 64);
-    c.restore();
-  }
-
-  /**
-   * What the ghost is saying.
-   *
-   * The voice is synthesised for prosody rather than for words, so the line
-   * is deliberately not intelligible — you hear something speaking and the
-   * caption tells you what. Set low and in a sickly green so it reads as the
-   * house talking rather than as UI.
-   */
-  private drawSubtitle(c: CanvasRenderingContext2D, w: number, h: number, text: string): void {
-    c.save();
-    c.font = 'italic 500 15px ui-sans-serif, system-ui, sans-serif';
-    c.textAlign = 'center';
-    const tw = c.measureText(text).width;
-    c.fillStyle = 'rgba(0,0,0,0.5)';
-    c.fillRect(w / 2 - tw / 2 - 14, h - 118, tw + 28, 26);
-    c.fillStyle = 'rgba(150,200,150,0.88)';
-    c.fillText(text, w / 2, h - 100);
     c.restore();
   }
 

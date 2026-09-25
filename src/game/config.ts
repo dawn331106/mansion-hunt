@@ -112,15 +112,15 @@ export const AUDIO = {
   /** Distance at which voice attenuation starts. Full volume inside it. */
   voiceRefDistance: 2.5,
   /**
-   * How far the ghost's voice carries.
+   * How far the ghost's chant carries.
    *
-   * Deliberately further than its footsteps. A taunt is often the first
-   * warning a survivor gets — you hear it talking two rooms away long before
-   * you could hear it walking — and in a house with no map that early, vague
+   * Deliberately further than its footsteps. The chant is often the first
+   * warning a survivor gets — you hear it two rooms away long before you
+   * could hear it walking — and in a house with no map that early, vague
    * bearing is most of what makes the place navigable under pressure.
    */
-  tauntMaxDistance: 26,
-  tauntRefDistance: 4.0,
+  chantMaxDistance: 26,
+  chantRefDistance: 4.0,
 
   /** Beyond this, footsteps cannot be heard. */
   footstepMaxDistance: 14,

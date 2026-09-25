@@ -13,12 +13,62 @@
  *   - A sub-bass drone that slowly detunes, felt more than heard.
  *   - Filtered noise "wind", panning slowly, with a filter that breathes.
  *   - A dissonant pad that swells and fades every half minute or so.
- *   - Occasional one-off noises — a creak, a distant knock, a settling beam —
- *     fired at random intervals from random directions.
+ *   - One-off calls taking turns, the first 7s in and then 7-12s apart: a
+ *     wolf howling outside, an owl, then something screaming inside the
+ *     house, and round again.
  *
  * The whole thing ducks when a jumpscare fires, because the scare owns that
  * moment, and it tightens as the match goes on.
  */
+
+/** The wolf, served from `public/`. */
+const HOWL_URL = 'assets/werewolf-howl.mp3';
+/** Seconds of silence at the top of the recording. */
+const HOWL_LEAD_IN = 0.26;
+/**
+ * The howl's level on the event bus.
+ *
+ * 0.55 was tuned to sit with the synthesised events, and in play it simply
+ * went unheard under the bed, so it is set to stand out: loud enough to stop
+ * you in a corridor, still under the event limiter.
+ * `tools/ambiencetest.mjs` checks it clears the bed.
+ */
+const HOWL_GAIN = 0.8;
+/** An owl in the grounds, which took over from the synthesised dogs. */
+const OWL_URL = 'assets/owl-hoot.mp3';
+/** Seconds of silence at the top of the recording. */
+const OWL_LEAD_IN = 0.84;
+/**
+ * The owl's level on the event bus.
+ *
+ * The recording is about 4dB hotter than the howl, and an owl should read as
+ * the quieter, more ordinary night sound of the two, so it sits well under
+ * the howl's level while still clearing the bed.
+ */
+const OWL_GAIN = 0.4;
+/** Something screaming inside the house, which took over from the synthesised crying. */
+const SCREAM_URL = 'assets/demon-scream.mp3';
+/** Seconds of silence at the top of the recording. */
+const SCREAM_LEAD_IN = 0.14;
+/**
+ * The scream's level on the event bus.
+ *
+ * The recording is about 1dB hotter than the howl; it sits just under it, so
+ * the three calls land at much the same level and none of them dominates.
+ */
+const SCREAM_GAIN = 0.7;
+/**
+ * The one-off sounds take turns: the first 7s into the match, then each next
+ * one 7-12 seconds after the last.
+ *
+ * A howl, then a hoot, then the scream, then the howl again, and so on (the
+ * order is `rotation` in the class). They replaced every other one-off noise
+ * in here: a small cast that keeps coming back reads as a place, where a
+ * random scatter of creaks and cries read as a sound effects library. The gap
+ * wanders so it never settles into a beat.
+ */
+const FIRST_CALL = 7;
+const CALL_GAP = [7, 12] as const;
 
 export class Ambience {
   /**
@@ -30,21 +80,34 @@ export class Ambience {
   readonly out: GainNode;
   /** The continuous layers: drone and wind. Deliberately quiet. */
   private readonly bed!: GainNode;
-  /** One-off sounds: creaks, knocks, howls, dogs, crying. */
+  /** One-off sounds: the howl, the owl and the scream. */
   private readonly events!: GainNode;
   private readonly nodes: { stop?: () => void; disconnect(): void }[] = [];
   private readonly drone: { osc: OscillatorNode[]; gain: GainNode } | null = null;
   private filter: BiquadFilterNode | null = null;
   private padTimer: number | null = null;
-  private eventTimer: number | null = null;
+  /** The pending timer for the next call in the rotation. */
+  private callTimer: number | null = null;
   private stopped = false;
+  /** The decoded recordings, once they have arrived. */
+  private howlBuffer: AudioBuffer | null = null;
+  private owlBuffer: AudioBuffer | null = null;
+  private screamBuffer: AudioBuffer | null = null;
+  /** Resolves when the recordings have loaded (or failed to). Awaited by the tests. */
+  readonly samplesReady: Promise<void>;
 
   /** 0 = calm, 1 = the ghost is close. Drives how ugly the bed becomes. */
   private dread = 0;
   /** Context time the current chase layer ends, so it is not restacked. */
   private panicUntil = 0;
 
-  constructor(private readonly ctx: AudioContext, destination: AudioNode) {
+  constructor(private readonly ctx: BaseAudioContext, destination: AudioNode) {
+    this.samplesReady = Promise.all([
+      this.loadSample(HOWL_URL).then((b) => { this.howlBuffer = b; }),
+      this.loadSample(OWL_URL).then((b) => { this.owlBuffer = b; }),
+      this.loadSample(SCREAM_URL).then((b) => { this.screamBuffer = b; }),
+    ]).then(() => undefined);
+
     this.out = ctx.createGain();
     this.out.gain.value = 0;
     this.out.connect(destination);
@@ -76,12 +139,10 @@ export class Ambience {
     /*
      * A limiter on the event bus.
      *
-     * Events fire independently and occasionally land on top of each other —
-     * a howl during a knock during a creak — and with them now at an audible
-     * level that stack measured just over full scale and clipped. A
-     * compressor with a hard ratio and a fast attack costs nothing and means
-     * the loud case is squashed rather than distorted; without it the rare
-     * coincidence is the one that sounds broken.
+     * The recordings are mastered hot, and a slow howl pitched down runs
+     * long enough that the next call can start under its tail. A compressor
+     * with a hard ratio and a fast attack costs nothing and means a loud
+     * moment is squashed rather than distorted.
      */
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -6;
@@ -94,7 +155,7 @@ export class Ambience {
     this.drone = this.buildDrone();
     this.buildWind();
     this.scheduleNextPad();
-    this.scheduleNextEvent();
+    this.scheduleNextCall(0);
 
     // Fade in, so starting a match does not begin with a click.
     this.out.gain.setTargetAtTime(0.5, ctx.currentTime, 2.0);
@@ -234,242 +295,122 @@ export class Ambience {
   }
 
   /**
-   * One-off noises: a creak, a knock, a beam settling.
+   * The one-off sounds, in the order they take turns.
    *
-   * These are the layer that makes players turn around. They are deliberately
-   * *not* positional — they come from the house, not from a place — so they
-   * can never be mistaken for another player and never mislead a ghost.
+   * To add a sound to the rotation, give it a method like `howl` and add it
+   * here; it slots in after the last one, 7-12s on, and the cycle comes back
+   * round to the first.
    */
-  private scheduleNextEvent(): void {
+  private readonly rotation: ((t: number) => void)[] = [
+    (t) => this.howl(t),
+    (t) => this.owl(t),
+    (t) => this.scream(t),
+  ];
+
+  /**
+   * Queue call number `n` of the rotation: the first at `FIRST_CALL`, then
+   * each next one 7-12s after the last, so they strictly take turns.
+   *
+   * These are not positional: they come from the house, not from a place in
+   * it, so they can never be mistaken for a player.
+   */
+  private scheduleNextCall(n: number): void {
     if (this.stopped) return;
-    const wait = (7000 + Math.random() * 15000) * (1 - this.dread * 0.45);
-    this.eventTimer = window.setTimeout(() => {
-      this.playEvent();
-      this.scheduleNextEvent();
-    }, wait);
+    const wait = n === 0
+      ? FIRST_CALL
+      : CALL_GAP[0] + Math.random() * (CALL_GAP[1] - CALL_GAP[0]);
+    this.callTimer = window.setTimeout(() => {
+      this.callTimer = null;
+      if (this.stopped) return;
+      this.rotation[n % this.rotation.length](this.ctx.currentTime);
+      this.scheduleNextCall(n + 1);
+    }, wait * 1000);
   }
 
-  /** @internal — exposed for `tools/ambiencetest.mjs`. */
-  playEvent(): void {
-    const t = this.ctx.currentTime;
-    const kind = Math.random();
+  /**
+   * Play one of the recordings on the event bus.
+   *
+   * Each is close-miked, so it is rolled off above `cutoff` the way distance
+   * would roll it off, re-pitched within `rate` so the same take never plays
+   * twice alike, and started past its opening silence so it lands when fired.
+   */
+  private playSample(
+    buf: AudioBuffer | null, t: number, leadIn: number, gain: number,
+    cutoff: number, rate: readonly [number, number],
+  ): void {
+    if (!buf) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = rate[0] + Math.random() * (rate[1] - rate[0]);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = cutoff;
+    const g = this.ctx.createGain();
+    g.gain.value = gain;
+    src.connect(lp).connect(g).connect(this.events);
+    src.start(t, Math.min(leadIn, buf.duration));
+  }
 
-    /*
-     * The rarer, louder events come first and are checked against a small
-     * slice of the range, so a howl or a cry is an occasional shock rather
-     * than furniture. The creaks and knocks below are the common case.
-     */
-    if (kind < 0.10) { this.howl(t); return; }
-    if (kind < 0.19) { this.hounds(t); return; }
-    if (kind < 0.27) { this.crying(t); return; }
-
-    if (kind < 0.4) {
-      // A creak: a filtered sweep, like weight shifting on old timber.
-      const o = this.ctx.createOscillator();
-      o.type = 'sawtooth';
-      const f0 = 120 + Math.random() * 140;
-      o.frequency.setValueAtTime(f0, t);
-      o.frequency.exponentialRampToValueAtTime(f0 * (0.55 + Math.random() * 0.3), t + 0.9);
-      const bp = this.ctx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.value = 420;
-      bp.Q.value = 6;
-      const g = this.ctx.createGain();
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(0.85, t + 0.12);
-      g.gain.exponentialRampToValueAtTime(0.0005, t + 1.1);
-      o.connect(bp).connect(g).connect(this.events);
-      o.start(t);
-      o.stop(t + 1.2);
-    } else if (kind < 0.72) {
-      // A distant knock: two thuds, deep and short.
-      for (let i = 0; i < 2; i++) {
-        const at = t + i * 0.17;
-        const o = this.ctx.createOscillator();
-        o.type = 'sine';
-        o.frequency.setValueAtTime(90, at);
-        o.frequency.exponentialRampToValueAtTime(42, at + 0.14);
-        const g = this.ctx.createGain();
-        g.gain.setValueAtTime(0.42, at);
-        g.gain.exponentialRampToValueAtTime(0.0005, at + 0.22);
-        o.connect(g).connect(this.events);
-        o.start(at);
-        o.stop(at + 0.3);
-      }
-    } else {
-      // Settling dust: a short hiss, high and quiet, easy to miss.
-      const len = Math.floor(this.ctx.sampleRate * 0.6);
-      const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-      const d = buf.getChannelData(0);
-      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.5);
-      const src = this.ctx.createBufferSource();
-      src.buffer = buf;
-      const hp = this.ctx.createBiquadFilter();
-      hp.type = 'highpass';
-      hp.frequency.value = 2400;
-      const g = this.ctx.createGain();
-      g.gain.value = 0.40;
-      src.connect(hp).connect(g).connect(this.events);
-      src.start(t);
+  /**
+   * Fetch and decode one of the recordings.
+   *
+   * Loaded once, when the ambience starts, so each sound plays from a decoded
+   * buffer rather than waiting on the network. A failure is silent: the house
+   * simply goes without that sound, which costs atmosphere, not the match.
+   */
+  private async loadSample(url: string): Promise<AudioBuffer | null> {
+    try {
+      const base = import.meta.env.BASE_URL || '/';
+      const res = await fetch((base.endsWith('/') ? base : `${base}/`) + url);
+      if (!res.ok) return null;
+      return await this.ctx.decodeAudioData(await res.arrayBuffer());
+    } catch {
+      return null;
     }
   }
 
   /**
    * A wolf, a long way off.
    *
-   * A slow upward glide into a held note, then a long fall — the shape of a
-   * howl is almost entirely in that rise and the sustain at the top. Two
-   * voices slightly apart make it read as distance rather than as a
-   * synthesiser, because a single clean tone sounds electronic however it
-   * is shaped.
+   * A recording, not a synthesis. The synthesised howl — a sawtooth glide
+   * through a formant filter — read as a synthesiser however it was shaped,
+   * and a howl is exactly the sound where that gives the game away.
    */
   /** @internal — exposed for `tools/ambiencetest.mjs`. */
   howl(t: number): void {
-    const dur = 2.6 + Math.random() * 1.2;
-    const base = 220 + Math.random() * 90;
-
-    for (const [mult, level, delay] of [[1, 0.42, 0], [1.006, 0.30, 0.14]] as const) {
-      const o = this.ctx.createOscillator();
-      o.type = 'sawtooth';
-      const at = t + delay;
-      o.frequency.setValueAtTime(base * 0.55 * mult, at);
-      o.frequency.exponentialRampToValueAtTime(base * mult, at + dur * 0.28);
-      o.frequency.setValueAtTime(base * mult, at + dur * 0.55);
-      o.frequency.exponentialRampToValueAtTime(base * 0.42 * mult, at + dur);
-
-      // A formant filter turns the saw into something with a throat.
-      const bp = this.ctx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.value = 780;
-      bp.Q.value = 4.5;
-      const lp = this.ctx.createBiquadFilter();
-      lp.type = 'lowpass';
-      // Heavily rolled off, which is what distance does to a sound.
-      lp.frequency.value = 1500;
-
-      const g = this.ctx.createGain();
-      g.gain.setValueAtTime(0, at);
-      g.gain.linearRampToValueAtTime(level, at + dur * 0.22);
-      g.gain.setValueAtTime(level, at + dur * 0.6);
-      g.gain.exponentialRampToValueAtTime(0.0004, at + dur);
-
-      o.connect(bp).connect(lp).connect(g).connect(this.events);
-      o.start(at);
-      o.stop(at + dur + 0.2);
-    }
+    this.playSample(this.howlBuffer, t, HOWL_LEAD_IN, HOWL_GAIN, 3400, [0.9, 1.04]);
   }
 
   /**
-   * Dogs, somewhere outside the compound.
+   * An owl, out in the grounds.
    *
-   * Street dogs setting each other off is one of the most characteristic
-   * night sounds of the setting, and it does something specific here: it
+   * A recording, replacing the synthesised dogs: a burst of filtered sawtooth
+   * barks that never quite read as an animal. It does the same job they did:
    * tells you there is a world beyond these walls that you are cut off from.
-   * Barks are short filtered bursts at irregular intervals, because a regular
-   * rhythm reads as a machine.
    */
   /** @internal — exposed for `tools/ambiencetest.mjs`. */
-  hounds(t: number): void {
-    const barks = 3 + Math.floor(Math.random() * 5);
-    let at = t;
-    for (let i = 0; i < barks; i++) {
-      const dur = 0.11 + Math.random() * 0.06;
-      const f0 = 300 + Math.random() * 180;
-
-      const o = this.ctx.createOscillator();
-      o.type = 'sawtooth';
-      o.frequency.setValueAtTime(f0 * 1.5, at);
-      o.frequency.exponentialRampToValueAtTime(f0 * 0.7, at + dur);
-
-      const bp = this.ctx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.value = 900 + Math.random() * 400;
-      bp.Q.value = 2.2;
-      const lp = this.ctx.createBiquadFilter();
-      lp.type = 'lowpass';
-      lp.frequency.value = 2200;
-
-      const g = this.ctx.createGain();
-      g.gain.setValueAtTime(0, at);
-      g.gain.linearRampToValueAtTime(0.34, at + 0.012);
-      g.gain.exponentialRampToValueAtTime(0.0004, at + dur);
-
-      o.connect(bp).connect(lp).connect(g).connect(this.events);
-      o.start(at);
-      o.stop(at + dur + 0.05);
-
-      // Uneven spacing, with the odd flurry.
-      at += dur + 0.09 + Math.random() * 0.34;
-    }
+  owl(t: number): void {
+    this.playSample(this.owlBuffer, t, OWL_LEAD_IN, OWL_GAIN, 3000, [0.94, 1.04]);
   }
 
   /**
-   * A child crying, far off and indistinct.
+   * Something screaming, somewhere else in the house.
    *
-   * The most unpleasant sound in here, and the one that does the most work.
-   * It is built as a voice — a buzz through formants — rather than as a tone,
-   * with a sobbing amplitude that catches and restarts. Kept quiet and
-   * heavily filtered so it is never quite clear enough to locate, which is
-   * the point: you are never sure whether you heard it.
+   * A recording, in the slot the synthesised crying had: the one call in the
+   * rotation that is inside with you rather than out in the grounds. Rolled
+   * off a little less than the animals, since it is only a few rooms away.
    */
   /** @internal — exposed for `tools/ambiencetest.mjs`. */
-  crying(t: number): void {
-    const sobs = 4 + Math.floor(Math.random() * 4);
-    const base = 300 + Math.random() * 80;
-
-    const bus = this.ctx.createGain();
-    bus.gain.value = 1;
-    const lp = this.ctx.createBiquadFilter();
-    lp.type = 'lowpass';
-    lp.frequency.value = 1300;
-    bus.connect(lp).connect(this.events);
-
-    let at = t;
-    for (let i = 0; i < sobs; i++) {
-      const dur = 0.34 + Math.random() * 0.22;
-      const f = base * (1 - i * 0.045);
-
-      const o = this.ctx.createOscillator();
-      o.type = 'sawtooth';
-      // Each sob rises then breaks downward.
-      o.frequency.setValueAtTime(f * 0.85, at);
-      o.frequency.exponentialRampToValueAtTime(f * 1.18, at + dur * 0.3);
-      o.frequency.exponentialRampToValueAtTime(f * 0.7, at + dur);
-
-      // Two formants near a crying vowel.
-      const f1 = this.ctx.createBiquadFilter();
-      f1.type = 'bandpass';
-      f1.frequency.value = 640;
-      f1.Q.value = 7;
-      const f2 = this.ctx.createBiquadFilter();
-      f2.type = 'bandpass';
-      f2.frequency.value = 1180;
-      f2.Q.value = 8;
-
-      const g = this.ctx.createGain();
-      g.gain.setValueAtTime(0, at);
-      g.gain.linearRampToValueAtTime(0.62, at + dur * 0.18);
-      g.gain.exponentialRampToValueAtTime(0.0004, at + dur);
-
-      const mix = this.ctx.createGain();
-      o.connect(f1).connect(mix);
-      o.connect(f2).connect(mix);
-      mix.connect(g).connect(bus);
-      o.start(at);
-      o.stop(at + dur + 0.1);
-
-      // The catch between sobs is what makes it read as crying.
-      at += dur + 0.10 + Math.random() * 0.14;
-    }
-    setTimeout(() => { bus.disconnect(); lp.disconnect(); }, (at - t + 2) * 1000);
+  scream(t: number): void {
+    this.playSample(this.screamBuffer, t, SCREAM_LEAD_IN, SCREAM_GAIN, 4200, [0.92, 1.04]);
   }
 
   /**
    * How frightened the house should sound, 0..1.
    *
-   * Driven by how close the ghost is. As it rises the bed grows darker and
-   * the random noises come more often, so a player learns to read the music
-   * as a proximity sense without ever being told a number.
+   * Driven by how close the ghost is. As it rises the bed grows darker, so a
+   * player learns to read it as a proximity sense without ever being told a
+   * number.
    */
   setDread(v: number): void {
     this.dread = Math.max(0, Math.min(1, v));
@@ -574,7 +515,7 @@ export class Ambience {
   stop(): void {
     this.stopped = true;
     if (this.padTimer !== null) clearTimeout(this.padTimer);
-    if (this.eventTimer !== null) clearTimeout(this.eventTimer);
+    if (this.callTimer !== null) clearTimeout(this.callTimer);
     const t = this.ctx.currentTime;
     this.out.gain.cancelScheduledValues(t);
     this.out.gain.setTargetAtTime(0, t, 0.4);
