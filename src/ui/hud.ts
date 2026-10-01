@@ -1,4 +1,5 @@
 import { MATCH, PULSE, SURVIVOR } from '../game/config.js';
+import { TOUCH } from '../game/touch.js';
 import type { GameState, Role, Survivor } from '../game/types.js';
 
 /**
@@ -50,6 +51,7 @@ export class Hud {
     this.drawReticle(c, w, h, hud);
 
     if (hud.role === 'survivor' && hud.self) {
+      this.drawObjectives(c, state, hud.self);
       this.drawStamina(c, w, h, hud.self);
       if (hud.self.hasKey) this.drawKeyBadge(c, w, h);
       if (hud.self.hidden) this.drawHiddenFrame(c, w, h);
@@ -63,6 +65,62 @@ export class Hud {
     if (hud.toast && state.time < hud.toast.until) this.drawToast(c, w, hud.toast.text);
 
     this.drawSurvivorTally(c, w, h, state, hud.role);
+  }
+
+  /**
+   * The survivor's objectives, top left.
+   *
+   * New players have no way to learn the win condition from the house itself
+   * — there is no map and nothing says "find the key". So the two steps are
+   * spelled out and tick off as they happen, and the second line changes to
+   * say whether the door is still locked behind someone else's key.
+   */
+  private drawObjectives(c: CanvasRenderingContext2D, state: GameState, s: Survivor): void {
+    if (!s.alive || s.escaped) return;
+
+    const keyDone = state.key.taken;
+    const keyNote = !keyDone
+      ? 'it is hidden somewhere in the house'
+      : s.hasKey ? 'you are carrying it' : 'another survivor found it';
+    const exitNote = state.exitUnlocked
+      ? 'the door is open — get out'
+      : keyDone && !s.hasKey
+        ? 'the key-holder must open it first'
+        : 'before something catches you';
+
+    const steps = [
+      { title: 'Find the key', note: keyNote, done: keyDone },
+      { title: 'Find the exit door and escape', note: exitNote, done: false },
+    ];
+
+    const x = 18, y = 20, pad = 12, panelW = 250, rowH = 38;
+    const panelH = pad * 2 + 18 + rowH * steps.length;
+
+    c.save();
+    c.fillStyle = 'rgba(0,0,0,0.45)';
+    c.fillRect(x, y, panelW, panelH);
+
+    c.textAlign = 'left';
+    c.font = '600 11px ui-sans-serif, system-ui, sans-serif';
+    c.fillStyle = 'rgba(255,255,255,0.5)';
+    c.fillText('HOW TO ESCAPE', x + pad, y + pad + 10);
+
+    steps.forEach((step, i) => {
+      const ry = y + pad + 18 + rowH * i + 14;
+      // The current step is the first one not yet done.
+      const active = !step.done && steps.slice(0, i).every((p) => p.done);
+
+      c.font = '600 13px ui-sans-serif, system-ui, sans-serif';
+      c.fillStyle = step.done
+        ? 'rgba(140,220,160,0.8)'
+        : active ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.45)';
+      c.fillText(`${step.done ? '✓' : `${i + 1}.`}  ${step.title}`, x + pad, ry);
+
+      c.font = '400 11px ui-sans-serif, system-ui, sans-serif';
+      c.fillStyle = active ? 'rgba(255,190,140,0.8)' : 'rgba(255,255,255,0.35)';
+      c.fillText(step.note, x + pad + 20, ry + 15);
+    });
+    c.restore();
   }
 
   /** A small, unobtrusive reticle. It turns red when a catch would land. */
@@ -136,7 +194,7 @@ export class Hud {
     c.font = '400 11px ui-sans-serif, system-ui, sans-serif';
     c.textAlign = 'center';
     c.fillStyle = 'rgba(255,255,255,0.4)';
-    c.fillText('E to climb out', w / 2, h - 40);
+    c.fillText(TOUCH ? 'USE to climb out' : 'E to climb out', w / 2, h - 40);
     c.restore();
   }
 
@@ -193,7 +251,7 @@ export class Hud {
     c.font = '400 11px ui-sans-serif, system-ui, sans-serif';
     c.textAlign = 'center';
     c.fillStyle = hud.catchReady ? 'rgba(255,90,90,0.85)' : 'rgba(255,255,255,0.25)';
-    c.fillText(hud.catchReady ? 'SPACE / CLICK — CATCH' : 'recovering…', w / 2, h - 44);
+    c.fillText(hud.catchReady ? (TOUCH ? 'CATCH is ready' : 'SPACE / CLICK — CATCH') : 'recovering…', w / 2, h - 44);
     c.restore();
   }
 

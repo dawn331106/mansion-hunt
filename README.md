@@ -48,6 +48,12 @@ important person in the building and the most dangerous person to be near.
 | `Space` / click | Catch (ghost only) |
 | `Esc` | Release the mouse |
 
+On a phone or tablet the game draws its own controls instead: a thumbstick
+under your left thumb (push past its ring to sprint), drag with your right
+thumb to look, and buttons for **USE**, **CROUCH** (a toggle), **CATCH** for
+the ghost, and pause. It plays best held sideways, and asks for full screen
+where the browser allows it. See `src/game/touch.ts`.
+
 ## Design decisions worth knowing
 
 **There is no map.** Not a minimap, not a compass, not a room name. You learn

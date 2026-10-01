@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230b0b10'/%3E%3Cpath d='M16 5c-5 0-8 4-8 9v13l3-3 3 3 2-3 2 3 3-3 3 3V14c0-5-3-9-8-9z' fill='%23cfd6e4'/%3E%3Ccircle cx='12.5' cy='14' r='2' fill='%230b0b10'/%3E%3Ccircle cx='19.5' cy='14' r='2' fill='%230b0b10'/%3E%3C/svg%3E" />
 <title>The House</title>
 <style>
@@ -48,6 +48,22 @@
       rgba(5,5,8,0.94);
     text-align: center;
     padding: 24px;
+    /*
+     * Scroll when the content is taller than the screen — a phone held
+     * sideways is under 400px tall. Centring with auto margins rather than
+     * justify-content keeps the top reachable: a centred column that
+     * overflows spills off both ends, and the top half cannot be scrolled to.
+     */
+    justify-content: flex-start;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .overlay > :first-child { margin-top: auto; }
+  .overlay > :last-child { margin-bottom: auto; }
+  @media (max-height: 500px) {
+    .overlay { gap: 14px; padding: 16px; }
+    h1 { font-size: 30px; }
+    button { padding: 12px 22px; }
   }
 
   h1 {
@@ -136,6 +152,103 @@
     background: rgba(4,4,7,0.72);
   }
   #paused p { color: var(--dim); letter-spacing: 0.14em; text-transform: uppercase; font-size: 13px; }
+
+  /* --- Phones and tablets. --- */
+  .controls-touch, .touch-note { display: none; }
+  body.touch .controls-keys { display: none; }
+  body.touch .controls-touch { display: block; }
+  body.touch .paused-keys { display: none; }
+  body.touch .paused-touch { display: block; }
+  .paused-touch { display: none; }
+  @media (orientation: portrait) { body.touch .touch-note { display: block; } }
+  .touch-note { color: #b8a27a; font-size: 12px; letter-spacing: 0.06em; margin: -8px 0 0; }
+  body.touch button:hover { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.18); transform: none; }
+  body.touch, body.touch * { -webkit-tap-highlight-color: transparent; }
+  body.touch #gl { touch-action: none; }
+  #touch-ui {
+    position: fixed;
+    inset: 0;
+    z-index: 5;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #touch-ui .t-zone { position: absolute; top: 0; bottom: 0; }
+  #touch-ui .t-move { left: 0; width: 45%; }
+  #touch-ui .t-look { right: 0; width: 55%; }
+  #touch-ui .t-stick {
+    position: absolute;
+    left: calc(90px + env(safe-area-inset-left));
+    top: calc(100% - 110px - env(safe-area-inset-bottom));
+    width: 112px;
+    height: 112px;
+    margin: -56px 0 0 -56px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.22);
+    background: rgba(255,255,255,0.04);
+    opacity: 0.45;
+    pointer-events: none;
+  }
+  #touch-ui .t-stick.on { opacity: 1; }
+  #touch-ui .t-stick.run { border-color: rgba(210,80,80,0.85); box-shadow: 0 0 18px rgba(210,80,80,0.35); }
+  #touch-ui .t-knob {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 48px;
+    height: 48px;
+    margin: -24px 0 0 -24px;
+    border-radius: 50%;
+    background: rgba(232,228,222,0.35);
+  }
+  #touch-ui .t-btn {
+    position: absolute;
+    width: 64px;
+    height: 64px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.3);
+    touch-action: none;
+  }
+  #touch-ui .t-btn:hover { transform: none; }
+  #touch-ui .t-btn.down, #touch-ui .t-crouch.on { background: rgba(139,26,26,0.5); border-color: rgba(210,80,80,0.8); }
+  #touch-ui .t-big {
+    width: 84px;
+    height: 84px;
+    font-size: 13px;
+    right: calc(24px + env(safe-area-inset-right));
+    bottom: calc(28px + env(safe-area-inset-bottom));
+  }
+  #touch-ui .t-catch { border-color: rgba(210,80,80,0.7); color: #ffd8d8; }
+  #touch-ui .t-crouch {
+    right: calc(124px + env(safe-area-inset-right));
+    bottom: calc(40px + env(safe-area-inset-bottom));
+  }
+  #touch-ui .t-pause {
+    top: calc(12px + env(safe-area-inset-top));
+    right: calc(12px + env(safe-area-inset-right));
+    width: 44px;
+    height: 44px;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+  #touch-ui .t-hint {
+    position: absolute;
+    left: 50%;
+    top: 24%;
+    width: 90%;
+    transform: translateX(-50%);
+    color: rgba(232,228,222,0.75);
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    text-align: center;
+    pointer-events: none;
+    transition: opacity 1.2s;
+  }
+  #touch-ui .t-hint.gone { opacity: 0; }
 
   #lobby, #join { display: none; }
 
@@ -284,7 +397,15 @@
     </label>
   </div>
 
-  <div class="controls">
+  <p class="touch-note">Turn your phone sideways for the best view.</p>
+
+  <div class="controls controls-touch">
+    Left thumb: move — push past the ring to run<br />
+    Right thumb: drag to look &nbsp;·&nbsp; USE: take the key, hide<br />
+    CROUCH: sneak quietly &nbsp;·&nbsp; CATCH: the ghost's grab
+  </div>
+
+  <div class="controls controls-keys">
     <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;·&nbsp;
     <kbd>Shift</kbd> sprint &nbsp;·&nbsp;
     <kbd>Ctrl</kbd> crouch<br />
@@ -350,7 +471,10 @@
 </div>
 
 <div id="paused" class="overlay">
-  <p>click to resume</p>
+  <div>
+    <p class="paused-keys">click to resume</p>
+    <p class="paused-touch">tap to resume</p>
+  </div>
 </div>
 
 <div id="end" class="overlay">

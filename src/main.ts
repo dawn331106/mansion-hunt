@@ -5,6 +5,7 @@ import { AudioEngine } from './audio/engine.js';
 import { dist } from './core/vec.js';
 import { GHOST, SURVIVOR } from './game/config.js';
 import { InputController } from './game/input.js';
+import { TOUCH } from './game/touch.js';
 import type { Intent } from './game/intent.js';
 
 import { buildMansion } from './game/map.js';
@@ -71,6 +72,12 @@ const endScreen = document.getElementById('end') as HTMLDivElement;
 const glCanvas = document.getElementById('gl') as HTMLCanvasElement;
 const hudCanvas = document.getElementById('hud') as HTMLCanvasElement;
 const pausedNote = document.getElementById('paused') as HTMLDivElement;
+
+// Phones get on-screen controls; the menu and prompts describe those instead
+// of keys (see `index.html` and `game/touch.ts`).
+document.body.classList.toggle('touch', TOUCH);
+/** How a prompt names the interact action: the E key, or the USE button. */
+const USE = TOUCH ? 'USE' : 'E';
 
 document.getElementById('play-survivor')!.addEventListener('click', () => start('survivor'));
 document.getElementById('play-ghost')!.addEventListener('click', () => start('ghost'));
@@ -354,7 +361,7 @@ async function start(
 
   const renderer = new Renderer(glCanvas, mansion);
   const hud = new Hud(hudCanvas);
-  const input = new InputController(glCanvas, startYaw);
+  const input = new InputController(glCanvas, startYaw, role === 'ghost' ? 'ghost' : 'survivor');
 
   input.onLockChanged = (locked) => {
     pausedNote.style.display = locked ? 'none' : 'flex';
@@ -777,10 +784,10 @@ function promptFor(s: Session): string | null {
 
   if (!s.state.key.taken &&
       dist(self.pos.x, self.pos.z, s.state.key.x, s.state.key.z) < SURVIVOR.interactRange) {
-    return 'E — take the key';
+    return `${USE} — take the key`;
   }
   const spot = nearestFreeSpot(s.state, mansion, self.pos.x, self.pos.z);
-  if (spot) return spot.kind === 'almirah' ? 'E — hide inside' : 'E — crawl under';
+  if (spot) return spot.kind === 'almirah' ? `${USE} — hide inside` : `${USE} — crawl under`;
 
   if (self.hasKey &&
       Math.abs(self.pos.x - mansion.exit.x) < 4 && Math.abs(self.pos.z - mansion.exit.z) < 4) {
