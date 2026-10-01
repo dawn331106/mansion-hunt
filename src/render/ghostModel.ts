@@ -194,6 +194,8 @@ export function createGhost(): GhostModel {
   const lastPos = new THREE.Vector3();
   let speed = 0;
   let chaseMix = 0;
+  /** The turn currently added to the head bone, so it can be taken off again. */
+  let headTurn = 0;
 
   return {
     object: group,
@@ -222,18 +224,33 @@ export function createGhost(): GhostModel {
         chase.setEffectiveWeight(chaseMix * (1 - l));
         lungeAction.setEffectiveWeight(l);
         lungeAction.time = lunge * lungeAction.getClip().duration;
+
+        /*
+         * Take last frame's head turn back off before the mixer runs.
+         *
+         * The mixer only writes a bone when its animated value changes, so
+         * while the Lunge is held on one pose it leaves the head alone — and
+         * the turn added on top piled up frame after frame until the face was
+         * side-on to the camera for the whole of the scare.
+         */
+        if (headBone && headTurn !== 0) headBone.rotateY(-headTurn);
+        headTurn = 0;
         mixer.update(dt);
 
         /*
          * Turn the head toward the camera, in the body's own frame, on top of
          * the animation. A ghost whose head is already turned toward you when
          * you round a corner is far worse than one that has to turn.
+         *
+         * Not during the catch: the scare has already squared the whole body
+         * to the lens, and the face must meet it dead on.
          */
         if (headBone && modelRoot) {
           // Measured in the model's own frame, where the face looks down +Z.
           const local = modelRoot.worldToLocal(camera.position.clone());
           const rel = Math.atan2(local.x, local.z);
-          headBone.rotateY(THREE.MathUtils.clamp(rel, -0.45, 0.45) * (0.3 + lunge * 0.5));
+          headTurn = THREE.MathUtils.clamp(rel, -0.45, 0.45) * 0.3 * (1 - l);
+          headBone.rotateY(headTurn);
         }
       }
 
