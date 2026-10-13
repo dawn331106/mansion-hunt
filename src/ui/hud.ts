@@ -27,6 +27,18 @@ export interface HudState {
   catchReady: boolean;
 }
 
+
+/**
+ * How far to raise the bottom-centre HUD (stamina, key warning, prompts).
+ *
+ * A phone held upright is too narrow for the on-screen buttons and the
+ * stamina bar to share the bottom edge, so on touch in portrait the HUD sits
+ * above the buttons instead of under them.
+ */
+function bottomLift(w: number, h: number): number {
+  return TOUCH && h > w ? 130 : 0;
+}
+
 export class Hud {
   private readonly ctx: CanvasRenderingContext2D;
 
@@ -144,7 +156,7 @@ export class Hud {
   private drawStamina(c: CanvasRenderingContext2D, w: number, h: number, s: Survivor): void {
     const barW = 180, barH = 5;
     const x = (w - barW) / 2;
-    const y = h - 58;
+    const y = h - bottomLift(w, h) - 58;
     const frac = s.stamina / SURVIVOR.staminaMax;
 
     c.fillStyle = 'rgba(0,0,0,0.45)';
@@ -175,10 +187,10 @@ export class Hud {
     // A warning, not a trophy. Carrying the key ends the match if you are
     // caught, and the HUD should say so every second you hold it.
     c.fillStyle = 'rgba(255,190,90,0.95)';
-    c.fillText('YOU HAVE THE KEY', w / 2, h - 78);
+    c.fillText('YOU HAVE THE KEY', w / 2, h - bottomLift(w, h) - 78);
     c.font = '400 11px ui-sans-serif, system-ui, sans-serif';
     c.fillStyle = 'rgba(255,150,90,0.75)';
-    c.fillText('if you are caught, everyone loses', w / 2, h - 64);
+    c.fillText('if you are caught, everyone loses', w / 2, h - bottomLift(w, h) - 64);
     c.restore();
   }
 
@@ -194,7 +206,7 @@ export class Hud {
     c.font = '400 11px ui-sans-serif, system-ui, sans-serif';
     c.textAlign = 'center';
     c.fillStyle = 'rgba(255,255,255,0.4)';
-    c.fillText(TOUCH ? 'USE to climb out' : 'E to climb out', w / 2, h - 40);
+    c.fillText(TOUCH ? 'push the stick to climb out' : 'E to climb out', w / 2, h - bottomLift(w, h) - 40);
     c.restore();
   }
 
@@ -251,7 +263,7 @@ export class Hud {
     c.font = '400 11px ui-sans-serif, system-ui, sans-serif';
     c.textAlign = 'center';
     c.fillStyle = hud.catchReady ? 'rgba(255,90,90,0.85)' : 'rgba(255,255,255,0.25)';
-    c.fillText(hud.catchReady ? (TOUCH ? 'CATCH is ready' : 'SPACE / CLICK — CATCH') : 'recovering…', w / 2, h - 44);
+    c.fillText(hud.catchReady ? (TOUCH ? 'CATCH is ready' : 'SPACE / CLICK — CATCH') : 'recovering…', w / 2, h - bottomLift(w, h) - 44);
     c.restore();
   }
 

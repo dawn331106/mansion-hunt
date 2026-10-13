@@ -4,6 +4,7 @@ import { resetSurvivorBots, survivorBotIntent } from './ai/survivorBot.js';
 import { AudioEngine } from './audio/engine.js';
 import { dist } from './core/vec.js';
 import { GHOST, SURVIVOR } from './game/config.js';
+import { AutoInteract } from './game/autoInteract.js';
 import { InputController } from './game/input.js';
 import { TOUCH } from './game/touch.js';
 import type { Intent } from './game/intent.js';
@@ -36,6 +37,8 @@ interface Session {
   /** Which actor the local player controls. */
   selfId: string;
   input: InputController;
+  /** On a phone, a survivor uses things by walking into them. Null elsewhere. */
+  auto: AutoInteract | null;
   renderer: Renderer;
   hud: Hud;
   audio: AudioEngine;
@@ -369,6 +372,7 @@ async function start(
 
   session = {
     state, role, selfId, input, renderer, hud, audio,
+    auto: input.isTouch && role !== 'ghost' ? new AutoInteract(mansion) : null,
     toast: null, mic: null,
     net, assignments: opts.assignments ?? {},
   };
@@ -523,7 +527,7 @@ function frame(now: number): void {
        * there is nothing to protect here: the keyboard works unlocked, and
        * only the mouse look needs the lock.
        */
-      client?.sendIntent(s.input.read());
+      client?.sendIntent(readIntent(s));
     }
     const world = client?.interpolated();
     if (world) s.state = world;
@@ -593,11 +597,21 @@ function frame(now: number): void {
   }
 }
 
+/** The local player's intent, with a phone's walk-into-it presses added. */
+function readIntent(s: Session): Intent {
+  const intent = s.input.read();
+  if (s.auto) {
+    const self = s.state.survivors.find((x) => x.id === s.selfId) ?? null;
+    s.auto.apply(s.state, self, intent, clock);
+  }
+  return intent;
+}
+
 function tick(s: Session, dt: number): void {
   const intents = new Map<string, Intent>();
 
   // --- The local player. ---
-  const playerIntent = s.input.read();
+  const playerIntent = readIntent(s);
   intents.set(s.selfId, playerIntent);
 
   /*
@@ -784,10 +798,13 @@ function promptFor(s: Session): string | null {
 
   if (!s.state.key.taken &&
       dist(self.pos.x, self.pos.z, s.state.key.x, s.state.key.z) < SURVIVOR.interactRange) {
-    return `${USE} — take the key`;
+    return TOUCH ? 'walk onto the key' : `${USE} — take the key`;
   }
   const spot = nearestFreeSpot(s.state, mansion, self.pos.x, self.pos.z);
-  if (spot) return spot.kind === 'almirah' ? `${USE} — hide inside` : `${USE} — crawl under`;
+  if (spot) {
+    if (TOUCH) return spot.kind === 'almirah' ? 'walk into it to hide' : 'walk into it to crawl under';
+    return spot.kind === 'almirah' ? `${USE} — hide inside` : `${USE} — crawl under`;
+  }
 
   if (self.hasKey &&
       Math.abs(self.pos.x - mansion.exit.x) < 4 && Math.abs(self.pos.z - mansion.exit.z) < 4) {
@@ -926,6 +943,12 @@ function resize(): void {
       });
     });
     return out;
+  },
+  /** The last frame's draw calls and the shader programs built so far. */
+  renderStats() {
+    if (!session) return null;
+    const info = session.renderer.renderer.info;
+    return { calls: info.render.calls, triangles: info.render.triangles, programs: info.programs?.length ?? 0 };
   },
   /** What the renderer currently believes about the ghost, for tests. */
   ghostView() {

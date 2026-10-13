@@ -66,7 +66,7 @@ export class TouchControls {
            <button class="t-btn t-crouch">CROUCH</button>`}
       <div class="t-hint">${role === 'ghost'
         ? 'left thumb: move · right thumb: look'
-        : 'left thumb: move (push past the ring to run) · right thumb: look'}</div>
+        : 'left thumb: move (push past the ring to run) · right thumb: look · walk into the key, a wardrobe or a bed to use it'}</div>
     `;
     document.body.appendChild(this.root);
     this.base = this.root.querySelector('.t-stick') as HTMLDivElement;

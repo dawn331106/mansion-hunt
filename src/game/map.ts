@@ -47,6 +47,13 @@ export interface Solid extends Box {
   crouchUnder: boolean;
   /** Which room this belongs to, so the renderer can tint it. */
   room?: string;
+  /**
+   * Drawn with a model instead of a tinted box; only collision reads the box.
+   * A 'table' is fitted to its box by the renderer. A 'prop' is the box under
+   * one or more entries in `props`, which say what is drawn there. A
+   * 'pillar' is a column, drawn as the shell kit's pillar.
+   */
+  model?: 'table' | 'prop' | 'pillar';
 }
 
 /**
@@ -94,6 +101,41 @@ export interface HidingSpot {
   room: string;
 }
 
+/** The modelled accessories in `public/assets/horror_accessories/`. */
+export type PropModel =
+  | 'gurney' | 'rocking_chair' | 'clock' | 'mirror' | 'candelabra';
+
+/**
+ * A placed accessory: what the renderer draws. Collision, where there is
+ * any, is a separate box in `solids` sized to the same footprint.
+ */
+export interface Prop {
+  model: PropModel;
+  x: number;
+  z: number;
+  /**
+   * Turn about the vertical, as Three.js `rotation.y`: the model's front
+   * (+z) ends up facing (sin rot, cos rot). Quarter turns only for anything
+   * with collision, so its box stays axis-aligned.
+   */
+  rot: number;
+  room: string;
+}
+
+/**
+ * A moshal in its wall bracket: the only kind of light in the house.
+ *
+ * (x, z) is on the wall's face and `rot` turns the bracket to face out of
+ * the wall, as for a `Prop`. Torches are never solid; they hang above head
+ * height.
+ */
+export interface Torch {
+  x: number;
+  z: number;
+  rot: number;
+  room: string;
+}
+
 export interface Room {
   name: string;
   /** Shown nowhere in game — used by bots and for debugging. */
@@ -107,6 +149,10 @@ export interface Mansion {
   /** Outer bounds, for clamping. */
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
   solids: Solid[];
+  /** Modelled accessories, drawn by the renderer. */
+  props: Prop[];
+  /** Wall torches, each one a light. */
+  torches: Torch[];
   doors: Door[];
   hidingSpots: HidingSpot[];
   rooms: Room[];
@@ -125,6 +171,8 @@ export interface Mansion {
    * ceiling. Stored as a rectangle the renderer and lighting both consult.
    */
   courtyard: { minX: number; maxX: number; minZ: number; maxZ: number };
+  /** Every roofed rectangle of the plan — each room and corridor — for the ceilings. */
+  ceilings: { minX: number; maxX: number; minZ: number; maxZ: number }[];
 }
 
 const WALL_H = 3.2;
@@ -152,6 +200,66 @@ function lowFurn(
 ): Solid {
   return { kind: 'furniture', x, z, hx, hz, y0: gap, y1: h, crouchUnder: true, room };
 }
+
+/** Height of a tabletop, and of the underside of the apron below it. */
+const TABLE_TOP = 1.0;
+const TABLE_GAP = 0.77;
+
+/**
+ * A plain oak table on four legs, open underneath: the hollow table model.
+ *
+ * Every table stands the same height — tall, so crawling under one is easy
+ * and the room beneath reads from across the floor — and only its footprint
+ * varies. The long side runs along x. Collision sees just the top and apron;
+ * the legs are too thin to be worth snagging on.
+ */
+function table(x: number, z: number, hx: number, hz: number, room: string): Solid {
+  return { ...lowFurn(x, z, hx, hz, TABLE_GAP, TABLE_TOP, room), model: 'table' };
+}
+
+/**
+ * Each accessory's footprint as modelled, facing +z: half-extents and height.
+ *
+ * The gurney is the one you can crawl under — its deck sits at 0.6m and its
+ * sheet hangs no lower than 0.46m, both above the crawl height — so it
+ * carries the bed and bench hiding spots.
+ */
+const PROP_SIZE: Record<PropModel, { hx: number; hz: number; h: number; gap?: number }> = {
+  gurney: { hx: 0.99, hz: 0.34, h: 0.82, gap: 0.5 },
+  rocking_chair: { hx: 0.28, hz: 0.41, h: 1.18 },
+  clock: { hx: 0.25, hz: 0.15, h: 2.16 },
+  mirror: { hx: 0.34, hz: 0.25, h: 1.76 },
+  candelabra: { hx: 0.33, hz: 0.22, h: 1.76 },
+};
+
+/**
+ * Put an accessory in the house, with a collision box to match.
+ *
+ * `solid: false` places the model alone, for rows that share one box.
+ */
+function place(
+  props: Prop[], solids: Solid[],
+  model: PropModel, x: number, z: number, rot: number, room: string,
+  solid = true,
+): void {
+  props.push({ model, x, z, rot, room });
+  const size = PROP_SIZE[model];
+  if (!solid) return;
+  // A quarter turn swaps which way the footprint is long.
+  const turned = Math.abs(Math.sin(rot)) > 0.5;
+  const hx = turned ? size.hz : size.hx;
+  const hz = turned ? size.hx : size.hz;
+  const box = size.gap !== undefined
+    ? lowFurn(x, z, hx, hz, size.gap, size.h, room)
+    : furn(x, z, hx, hz, size.h, room);
+  solids.push({ ...box, model: 'prop' });
+}
+
+/** Quarter turns, as `rot`: which way a placed model's front faces. */
+const FACE_N = 0; // +z
+const FACE_S = Math.PI; // -z
+const FACE_E = Math.PI / 2; // +x
+const FACE_W = -Math.PI / 2; // -x
 
 /**
  * A wall with one or more doorways cut into it.
@@ -356,6 +464,8 @@ export function buildMansion(): Mansion {
   ];
 
   const courtyard = { minX: -9, maxX: 9, minZ: -7, maxZ: 7 };
+  const ceilings = PLAN.filter((r) => !r.open)
+    .map((r) => ({ minX: r.x0, maxX: r.x1, minZ: r.z0, maxZ: r.z1 }));
 
   /*
    * Turn the plan into walls.
@@ -451,76 +561,164 @@ export function buildMansion(): Mansion {
     });
   }
 
-  // --- Courtyard: the well and two tulsi plinths. ---
+  const props: Prop[] = [];
+  const put = (model: PropModel, x: number, z: number, rot: number, room: string, solid = true) =>
+    place(props, solids, model, x, z, rot, room, solid);
+
+  /*
+   * Furnishing.
+   *
+   * Everything but the architecture — the well, the colonnade, the attic
+   * stair — is a modelled accessory. The rooms keep the shape they had: every
+   * crawl-under bed and bench became a gurney (or, in the music room, a
+   * table), so each `under` hiding spot still has something over it, and the
+   * tall pieces stand roughly where the tall boxes did, so sightlines through
+   * a room are broken in the same places.
+   */
+
+  // --- Courtyard: the well, and two candelabras guttering in the open. ---
   solids.push(furn(0, 0, 1.3, 1.3, 1.0, 'courtyard'));
-  solids.push(furn(-6.2, 4.4, 0.55, 0.55, 0.85, 'courtyard'));
-  solids.push(furn(6.2, -4.4, 0.55, 0.55, 0.85, 'courtyard'));
+  put('candelabra', -6.2, 4.4, FACE_S, 'courtyard');
+  put('candelabra', 6.2, -4.4, FACE_N, 'courtyard');
 
-  // --- Verandah: a colonnade, and benches low enough to crawl under. ---
+  // --- Verandah: a colonnade, two abandoned gurneys to crawl under, and a
+  //     rocking chair facing the gate. ---
   for (const px of [-28, -18, -8, 8, 18, 28]) {
-    solids.push(furn(px, -33.5, 0.30, 0.30, WALL_H, 'verandah'));
+    solids.push({ ...furn(px, -33.5, 0.30, 0.30, WALL_H, 'verandah'), model: 'pillar' });
   }
-  solids.push(lowFurn(-24, -31.0, 2.4, 0.55, 0.48, 0.58, 'verandah'));
-  solids.push(lowFurn(24, -31.0, 2.4, 0.55, 0.48, 0.58, 'verandah'));
+  put('gurney', -24, -31.0, FACE_N, 'verandah');
+  put('gurney', 24, -31.0, FACE_N, 'verandah');
+  put('rocking_chair', 12, -31.0, FACE_S, 'verandah');
 
-  // --- Kitchen: clay stove, prep table, shelving. ---
-  solids.push(furn(5.2, -21.0, 1.3, 1.2, 0.92, 'kitchen'));
-  solids.push(lowFurn(8.0, -16.5, 1.5, 0.85, 0.70, 0.80, 'kitchen'));
-  solids.push(furn(11.6, -20.0, 0.7, 2.0, 2.2, 'kitchen'));
+  // --- Kitchen: the prep table, and a clock against the east wall. ---
+  const kitchenTable = table(8.0, -16.5, 1.1, 0.55, 'kitchen');
+  solids.push(kitchenTable);
+  put('clock', 12.6, -20.0, FACE_W, 'kitchen');
 
-  // --- Pantry: a narrow closet of shelves. ---
-  solids.push(furn(15.0, -21.5, 1.4, 0.7, 2.0, 'pantry'));
+  // --- Pantry: a draped mirror at the back. ---
+  put('mirror', 15.0, -22.5, FACE_N, 'pantry');
 
-  // --- Store: stacked crates, a room to lose a silhouette in. ---
-  solids.push(furn(-19.0, -21.0, 1.1, 1.1, 1.6, 'store'));
-  solids.push(furn(-13.5, -16.0, 0.8, 1.4, 2.0, 'store'));
+  // --- Store: draped mirrors stacked against the wall, and a spare gurney. ---
+  put('mirror', -19.6, -22.5, FACE_N, 'store');
+  put('mirror', -18.6, -22.5, FACE_N, 'store');
+  put('gurney', -13.5, -16.0, FACE_E, 'store');
 
-  // --- Washroom: a cistern and a low bench. ---
-  solids.push(furn(-9.5, -21.5, 0.8, 0.8, 1.3, 'washroom'));
-  solids.push(lowFurn(-5.5, -17.0, 1.2, 0.6, 0.50, 0.60, 'washroom'));
+  // --- Washroom: the mirror, covered, and a gurney where the bench was. ---
+  put('mirror', -9.5, -22.5, FACE_N, 'washroom');
+  put('gurney', -5.5, -17.0, FACE_N, 'washroom');
 
-  // --- Dining: a long table and a sideboard. ---
-  solids.push(lowFurn(26.0, -8.0, 2.6, 1.1, 0.76, 0.86, 'dining'));
-  solids.push(furn(29.4, -3.5, 0.7, 1.6, 1.6, 'dining'));
+  // --- Dining: the table, a clock where the sideboard stood, a candelabra. ---
+  const diningTable = table(26.0, -8.0, 1.4, 0.7, 'dining');
+  solids.push(diningTable);
+  put('clock', 30.6, -3.5, FACE_W, 'dining');
+  put('candelabra', 29.9, -12.2, FACE_N, 'dining');
 
-  // --- Music room: a harmonium and a tanpura case on its end. ---
-  solids.push(lowFurn(26.5, 11.0, 1.4, 0.8, 0.68, 0.78, 'music-room'));
-  solids.push(furn(29.4, 6.5, 0.6, 1.2, 1.8, 'music-room'));
+  // --- Music room: a low table, an empty rocking chair, a candelabra. ---
+  solids.push(table(26.5, 11.0, 1.0, 0.5, 'music-room'));
+  put('rocking_chair', 29.0, 7.0, FACE_W, 'music-room');
+  put('candelabra', 30.2, 12.4, FACE_S, 'music-room');
 
-  // --- Puja room: altar and columns. ---
-  solids.push(furn(-28, 21.4, 2.2, 0.8, 1.2, 'puja'));
-  solids.push(furn(-29.8, 15.5, 0.45, 0.45, 2.4, 'puja'));
-  solids.push(furn(-26.2, 15.5, 0.45, 0.45, 2.4, 'puja'));
+  // --- Puja room: a shrouded mirror between two candelabras, and a clock
+  //     either side of the room where the columns were. ---
+  put('mirror', -28.0, 22.5, FACE_S, 'puja');
+  put('candelabra', -29.6, 22.4, FACE_S, 'puja');
+  put('candelabra', -26.4, 22.4, FACE_S, 'puja');
+  put('clock', -29.8, 15.5, FACE_E, 'puja');
+  put('clock', -26.2, 15.5, FACE_W, 'puja');
 
-  // --- Library: shelf runs, the most maze-like room in the house. ---
-  solids.push(furn(-0.5, 18.0, 0.7, 3.0, 2.4, 'library'));
-  solids.push(furn(4.5, 18.0, 0.7, 3.0, 2.4, 'library'));
-  solids.push(lowFurn(7.0, 21.5, 1.4, 0.9, 0.72, 0.82, 'library'));
-
-  // --- Gallery: plinths in a row, and a bench along the wall. ---
-  for (const gx of [12.0, 16.0, 20.0]) {
-    solids.push(furn(gx, 19.5, 0.5, 0.5, 1.5, 'gallery'));
+  /*
+   * Library: two long rows of draped mirrors where the shelf runs were.
+   *
+   * Still the most maze-like room in the house. Each row is eight mirrors,
+   * facing alternately east and west, sharing one collision box.
+   */
+  for (const rx of [-0.5, 4.5]) {
+    for (let i = 0; i < 8; i++) {
+      put('mirror', rx, 15.4 + i * 0.75, i % 2 ? FACE_W : FACE_E, 'library', false);
+    }
+    solids.push({ ...furn(rx, 18.0, 0.3, 3.0, 1.76, 'library'), model: 'prop' });
   }
-  solids.push(lowFurn(16.0, 14.8, 2.2, 0.55, 0.48, 0.58, 'gallery'));
+  const libraryDesk = table(7.0, 21.5, 1.0, 0.5, 'library');
+  solids.push(libraryDesk);
 
-  // --- Guest room: a charpoy and a trunk. ---
-  solids.push(lowFurn(-16.5, 19.0, 1.15, 2.0, 0.54, 0.64, 'guest-room'));
-  solids.push(furn(-13.0, 21.8, 0.9, 0.7, 0.95, 'guest-room'));
+  // --- Gallery: draped mirrors in a row, and a gurney along the wall. ---
+  for (const gx of [12.0, 16.0, 20.0]) put('mirror', gx, 19.5, FACE_S, 'gallery');
+  put('gurney', 16.0, 14.8, FACE_N, 'gallery');
 
-  // --- Study: a desk to crawl under and a bookcase. ---
-  solids.push(lowFurn(-26.5, -10.0, 1.6, 0.9, 0.72, 0.82, 'study'));
-  solids.push(furn(-29.4, -6.5, 0.6, 1.4, 2.0, 'study'));
+  // --- Guest room: a gurney for a bed, and a rocking chair. ---
+  put('gurney', -16.5, 19.0, FACE_E, 'guest-room');
+  put('rocking_chair', -13.0, 21.8, FACE_S, 'guest-room');
+
+  // --- Study: the desk to crawl under, a clock, a rocking chair. ---
+  const studyDesk = table(-26.5, -10.0, 1.0, 0.5, 'study');
+  solids.push(studyDesk);
+  put('clock', -30.6, -6.5, FACE_E, 'study');
+  put('rocking_chair', -29.5, -11.6, FACE_E, 'study');
 
   // --- Attic stair: the flight itself, boxed in. ---
   solids.push(furn(33.5, 18.0, 2.0, 1.4, 2.4, 'attic-stair'));
 
-  // --- Bedrooms: charpoys and trunks. ---
-  solids.push(lowFurn(-28.0, -19.0, 1.15, 2.0, 0.54, 0.64, 'bedroom-south'));
-  solids.push(furn(-29.6, -15.0, 0.8, 0.7, 0.95, 'bedroom-south'));
-  solids.push(lowFurn(-26.5, 7.5, 1.15, 2.0, 0.54, 0.64, 'bedroom-north'));
-  solids.push(furn(-29.4, 12.0, 0.9, 0.7, 0.95, 'bedroom-north'));
-  solids.push(lowFurn(30.0, -19.0, 1.15, 2.0, 0.54, 0.64, 'bedroom-east'));
-  solids.push(furn(34.5, -15.5, 0.9, 0.7, 0.95, 'bedroom-east'));
+  // --- Bedrooms, turned wards: a gurney each, and one more piece. ---
+  put('gurney', -28.0, -19.0, FACE_E, 'bedroom-south');
+  put('rocking_chair', -29.6, -15.0, FACE_E, 'bedroom-south');
+  put('gurney', -26.5, 7.5, FACE_E, 'bedroom-north');
+  put('mirror', -29.4, 12.5, FACE_S, 'bedroom-north');
+  put('gurney', 30.0, -19.0, FACE_E, 'bedroom-east');
+  put('rocking_chair', 34.5, -15.5, FACE_S, 'bedroom-east');
+
+  // --- The North Passage: a clock halfway along, to tell you where you are. ---
+  put('clock', 0, 28.6, FACE_S, 'outer-n');
+
+  /*
+   * Moshals: every light in the house is a torch in an iron bracket on a wall.
+   *
+   * There are no lamps hanging in mid-air and no fill from nowhere. Where a
+   * room is lit, you can see what is lighting it, and the dark between two
+   * torches is real dark. Each sits flat on a wall face, clear of doorways
+   * and of the wardrobes and tall pieces that stand against walls.
+   *
+   * One to a room, one to each inner corridor, two along each long outer
+   * passage, and a pair at the gate. Twice this many made the house bright
+   * from end to end, and every torch is a light every pixel is shaded
+   * against, so the count is the frame rate too.
+   */
+  const torches: Torch[] = [];
+  const torch = (x: number, z: number, rot: number, room: string) =>
+    torches.push({ x, z, rot, room });
+
+  // Rooms.
+  torch(-31 + T, -20.0, FACE_E, 'bedroom-south');
+  torch(-15.5, -23 + T, FACE_N, 'store');
+  torch(-3 - T, -20.5, FACE_W, 'washroom');
+  torch(3 + T, -19.0, FACE_E, 'kitchen');
+  torch(21 - T, -19.0, FACE_W, 'pantry');
+  torch(31.0, -13 - T, FACE_S, 'bedroom-east');
+  torch(31 - T, -8.5, FACE_W, 'dining');
+  torch(26.5, 4 + T, FACE_N, 'music-room');
+  torch(-31 + T, 18.5, FACE_E, 'puja');
+  torch(-21 + T, 18.0, FACE_E, 'guest-room');
+  torch(2.0, 23 - T, FACE_S, 'library');
+  torch(16.0, 23 - T, FACE_S, 'gallery');
+  torch(27.5, 23 - T, FACE_S, 'attic-stair');
+  torch(-26.0, -4 - T, FACE_S, 'study');
+  torch(-31 + T, 8.0, FACE_E, 'bedroom-north');
+  // A pair either side of the gate, to show the way out.
+  torch(-6, -37 + T, FACE_N, 'verandah');
+  torch(6, -37 + T, FACE_N, 'verandah');
+
+  // The inner ring.
+  torch(0, -7 - T, FACE_S, 'corridor-s');
+  torch(0, 7 + T, FACE_N, 'corridor-n');
+  torch(-9 - T, 4.5, FACE_W, 'corridor-w');
+  torch(9 + T, -4.5, FACE_E, 'corridor-e');
+
+  // The outer ring.
+  torch(-27, -29 + T, FACE_N, 'outer-s');
+  torch(27, -29 + T, FACE_N, 'outer-s');
+  torch(-10, 29 - T, FACE_S, 'outer-n');
+  torch(10, 29 - T, FACE_S, 'outer-n');
+  torch(-37 + T, 0, FACE_E, 'outer-w');
+  torch(37 - T, 0, FACE_W, 'outer-e');
 
   /*
    * Hiding spots, placed against a wall and clear of the furniture.
@@ -549,7 +747,7 @@ export function buildMansion(): Mansion {
     { id: 'almirah-guest', kind: 'almirah', x: -12.5, z: 14.5, eyeHeight: 1.5, facing: Math.PI / 2, viewHalfAngle: 0.5, room: 'guest-room' },
     { id: 'almirah-music', kind: 'almirah', x: 22.5, z: 5.5, eyeHeight: 1.5, facing: 0, viewHalfAngle: 0.5, room: 'music-room' },
     { id: 'almirah-study', kind: 'almirah', x: -22.5, z: -12.0, eyeHeight: 1.5, facing: 0, viewHalfAngle: 0.5, room: 'study' },
-    { id: 'almirah-attic', kind: 'almirah', x: 26.5, z: 14.5, eyeHeight: 1.5, facing: Math.PI / 2, viewHalfAngle: 0.5, room: 'attic-stair' },
+    { id: 'almirah-attic', kind: 'almirah', x: 26.5, z: 14.8, eyeHeight: 1.5, facing: Math.PI / 2, viewHalfAngle: 0.5, room: 'attic-stair' },
     { id: 'almirah-corr-w', kind: 'almirah', x: -19.5, z: -4.0, eyeHeight: 1.5, facing: 0, viewHalfAngle: 0.5, room: 'corridor-w' },
     { id: 'almirah-corr-e', kind: 'almirah', x: 19.5, z: 4.0, eyeHeight: 1.5, facing: Math.PI, viewHalfAngle: 0.5, room: 'corridor-e' },
     { id: 'almirah-outer-n', kind: 'almirah', x: -35.5, z: 26.0, eyeHeight: 1.5, facing: 0, viewHalfAngle: 0.5, room: 'outer-n' },
@@ -557,10 +755,10 @@ export function buildMansion(): Mansion {
     { id: 'under-charpoy-s', kind: 'under', x: -28.0, z: -19.0, eyeHeight: 0.30, facing: 0, viewHalfAngle: 1.4, room: 'bedroom-south' },
     { id: 'under-charpoy-n', kind: 'under', x: -26.5, z: 7.5, eyeHeight: 0.30, facing: 0, viewHalfAngle: 1.4, room: 'bedroom-north' },
     { id: 'under-charpoy-e', kind: 'under', x: 30.0, z: -19.0, eyeHeight: 0.30, facing: 0, viewHalfAngle: 1.4, room: 'bedroom-east' },
-    { id: 'under-kitchen-table', kind: 'under', x: 8.0, z: -16.5, eyeHeight: 0.38, facing: -Math.PI / 2, viewHalfAngle: 1.4, room: 'kitchen' },
-    { id: 'under-dining', kind: 'under', x: 26.0, z: -8.0, eyeHeight: 0.40, facing: Math.PI, viewHalfAngle: 1.4, room: 'dining' },
-    { id: 'under-library-desk', kind: 'under', x: 7.0, z: 21.5, eyeHeight: 0.38, facing: -Math.PI / 2, viewHalfAngle: 1.4, room: 'library' },
-    { id: 'under-study-desk', kind: 'under', x: -26.5, z: -10.0, eyeHeight: 0.38, facing: Math.PI / 2, viewHalfAngle: 1.4, room: 'study' },
+    { id: 'under-kitchen-table', kind: 'under', x: kitchenTable.x, z: kitchenTable.z, eyeHeight: 0.38, facing: -Math.PI / 2, viewHalfAngle: 1.4, room: 'kitchen' },
+    { id: 'under-dining', kind: 'under', x: diningTable.x, z: diningTable.z, eyeHeight: 0.40, facing: Math.PI, viewHalfAngle: 1.4, room: 'dining' },
+    { id: 'under-library-desk', kind: 'under', x: libraryDesk.x, z: libraryDesk.z, eyeHeight: 0.38, facing: -Math.PI / 2, viewHalfAngle: 1.4, room: 'library' },
+    { id: 'under-study-desk', kind: 'under', x: studyDesk.x, z: studyDesk.z, eyeHeight: 0.38, facing: Math.PI / 2, viewHalfAngle: 1.4, room: 'study' },
     { id: 'under-guest-charpoy', kind: 'under', x: -16.5, z: 19.0, eyeHeight: 0.30, facing: 0, viewHalfAngle: 1.4, room: 'guest-room' },
     { id: 'under-gallery-bench', kind: 'under', x: 16.0, z: 14.8, eyeHeight: 0.26, facing: -Math.PI / 2, viewHalfAngle: 1.3, room: 'gallery' },
     { id: 'under-music-bench', kind: 'under', x: 26.5, z: 11.0, eyeHeight: 0.34, facing: Math.PI, viewHalfAngle: 1.4, room: 'music-room' },
@@ -632,6 +830,8 @@ export function buildMansion(): Mansion {
   return {
     bounds: { minX, maxX, minZ, maxZ },
     solids,
+    props,
+    torches,
     doors,
     hidingSpots,
     rooms,
@@ -662,6 +862,7 @@ export function buildMansion(): Mansion {
     exit: { x: 0, z: -36.4, hx: 2.0, hz: 0.6 },
     roomAt,
     courtyard,
+    ceilings,
   };
 }
 

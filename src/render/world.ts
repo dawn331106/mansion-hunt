@@ -1,5 +1,12 @@
 import * as THREE from 'three';
 import type { Mansion, Solid } from '../game/map.js';
+import { loadTables } from './tableModel.js';
+import { Stage } from './staging.js';
+import { buildShell, DOORWAY_H } from './shell.js';
+import { loadProps } from './propModels.js';
+import { buildTorches } from './torchModel.js';
+import { loadDoors, type DoorwaySlot } from './doorModel.js';
+import { loadWardrobes, WARDROBE_PEEK_Z, type WardrobeSlot } from './wardrobeModel.js';
 
 /**
  * Building the house in three dimensions.
@@ -62,10 +69,25 @@ export interface WorldView {
   keyMesh: THREE.Object3D;
   /** The gate, which visibly opens once unlocked. */
   gateMesh: THREE.Object3D;
-  /** Almirah doors, keyed by spot id, so they can swing open. */
+  /**
+   * Almirah doors, keyed by spot id, so they can swing open. Each child is a
+   * leaf with its open angle in `userData.openAngle`.
+   */
   hidingDoors: Map<string, THREE.Object3D>;
   /** Room doors, keyed by door id, so they can swing as people pass. */
   roomDoors: Map<string, THREE.Object3D>;
+  /**
+   * The key's glow. Turned down to nothing when the key is taken, never
+   * hidden: hiding a light changes how many lights every shader is built
+   * for, and the whole house recompiles in the frame the key is picked up.
+   */
+  keyGlow: THREE.PointLight;
+  /** Animate what moves on its own: doors, rocking chairs, flames. */
+  update(time: number): void;
+  /** Settles once every model has loaded, or failed to. */
+  ready(): Promise<void>;
+  /** Swap the stand-in boxes for the loaded models. */
+  reveal(): void;
   dispose(): void;
 }
 
@@ -79,84 +101,21 @@ export function buildWorld(mansion: Mansion): WorldView {
 
   const disposables: { dispose(): void }[] = [];
   const track = <T extends { dispose(): void }>(o: T): T => { disposables.push(o); return o; };
+  // Loaded models wait here, hidden, until the renderer has their shaders ready.
+  const stage = new Stage();
 
-  // --- Floor. One plane per room region so the tint changes underfoot. ---
-  const floorGeo = track(new THREE.PlaneGeometry(1, 1));
-  for (const r of mansion.rooms) {
-    const st = styleFor(r.name);
-    const mat = track(new THREE.MeshStandardMaterial({
-      color: st.floor, roughness: 0.95, metalness: 0.0,
-    }));
-    const m = new THREE.Mesh(floorGeo, mat);
-    m.rotation.x = -Math.PI / 2;
-    m.position.set(r.x, 0, r.z);
-    m.scale.set(20, 20, 1);
-    m.receiveShadow = true;
-    scene.add(m);
-  }
+  // --- Walls, floors and ceilings, in the mansion_shell design. ---
+  buildShell(scene, mansion, stage, track);
 
-  // A single dark plane under everything, to catch gaps between room tiles.
-  const baseMat = track(new THREE.MeshStandardMaterial({ color: 0x2a2724, roughness: 1 }));
-  const base = new THREE.Mesh(floorGeo, baseMat);
-  base.rotation.x = -Math.PI / 2;
-  base.position.y = -0.02;
-  base.scale.set(140, 140, 1);
-  base.receiveShadow = true;
-  scene.add(base);
-
-  // --- Ceiling, everywhere except the courtyard, which is open to the sky.
-  //     Sized per room rather than one blanket square: an oversized ceiling
-  //     overhangs the courtyard and reads as a dark wedge hanging in mid-air,
-  //     which is both ugly and confusing when the courtyard is supposed to be
-  //     the one place you can see the sky. ---
-  const ceilMat = track(new THREE.MeshStandardMaterial({ color: 0x2c2822, roughness: 1 }));
-  const CEIL_SIZE: Record<string, [number, number]> = {
-    'corridor-s': [42, 6],
-    'corridor-n': [42, 6],
-    'corridor-w': [12, 26],
-    'corridor-e': [12, 26],
-    'outer-s': [74, 6],
-    'outer-n': [74, 6],
-    'outer-w': [6, 46],
-    'outer-e': [6, 46],
-    'spur-sw': [4, 10],
-    'spur-se': [4, 10],
-    'spur-nw': [4, 10],
-    'spur-ne': [4, 10],
-    'spur-w': [10, 4],
-    'spur-e': [10, 4],
-    verandah: [74, 8],
-    puja: [6, 10],
-    'guest-room': [10, 10],
-    library: [12, 10],
-    gallery: [12, 10],
-    'attic-stair': [12, 10],
-    kitchen: [10, 10],
-    pantry: [8, 10],
-    store: [10, 10],
-    washroom: [8, 10],
-    dining: [10, 13],
-    'music-room': [10, 10],
-    study: [10, 9],
-    'bedroom-south': [6, 10],
-    'bedroom-north': [10, 9],
-    'bedroom-east': [12, 10],
-  };
-  for (const r of mansion.rooms) {
-    const size = CEIL_SIZE[r.name];
-    if (!size) continue;
-    const m = new THREE.Mesh(floorGeo, ceilMat);
-    m.rotation.x = Math.PI / 2;
-    m.position.set(r.x, 3.0, r.z);
-    m.scale.set(size[0], size[1], 1);
-    scene.add(m);
-  }
-
-  // --- Solids. Walls and furniture, tinted by the room they belong to. ---
+  // --- Furniture, tinted by the room it belongs to. ---
   const boxGeo = track(new THREE.BoxGeometry(1, 1, 1));
   const matCache = new Map<string, THREE.Material>();
+  const tables: { solid: Solid; standIn: THREE.Object3D }[] = [];
+  const propBoxes: THREE.Object3D[] = [];
 
   for (const s of mansion.solids) {
+    // The shell draws the walls and the columns.
+    if (s.kind === 'wall' || s.model === 'pillar') continue;
     const st = styleFor(s.room);
     const isFurniture = s.kind === 'furniture';
     // Furniture reads darker than the wall behind it, so silhouettes separate.
@@ -171,86 +130,59 @@ export function buildWorld(mansion: Mansion): WorldView {
       }));
       matCache.set(key, mat);
     }
-    scene.add(makeSolid(boxGeo, mat, s));
+    const mesh = makeSolid(boxGeo, mat, s);
+    // A table's or an accessory's box stands in until its model arrives.
+    if (s.model === 'table') tables.push({ solid: s, standIn: mesh });
+    if (s.model === 'prop') propBoxes.push(mesh);
+    scene.add(mesh);
   }
+  loadTables(scene, tables, stage, track);
+  const propView = loadProps(scene, mansion.props, propBoxes, stage, track);
 
   // --- Lighting. ---
   /*
-   * Low ambient: enough to read a doorway and not walk into walls, never
-   * enough to feel safe.
+   * Every light has something you can see making it.
    *
-   * This was roughly twice as bright, which made the house legible but not
-   * frightening — you could see the far side of a room from its doorway and
-   * there was nowhere the dark was doing any work. Halved, with the lamps
-   * dimmed to match, so a room is a pool of light with black between the
-   * pools. There is a floor below which it stops being atmosphere and starts
-   * being an unplayable black screen; this sits just above it.
+   * There used to be an ambient and a hemisphere fill under everything, and a
+   * lamp hanging invisible at the middle of each room. Now there are only the
+   * torches on the walls, the moon over the courtyard, and the key's own
+   * glow. Away from a torch it is properly dark, which is the point: light is
+   * somewhere you can be seen, and dark is somewhere you can hide.
    */
-  scene.add(new THREE.AmbientLight(0x1b2432, 1.0));
 
-  // A cold hemisphere fill, so floors and ceilings separate instead of
-  // merging into one void. This is what makes the dark legible.
-  scene.add(new THREE.HemisphereLight(0x3c4860, 0x14120f, 0.45));
-
-  // Moonlight into the open courtyard. The one genuinely bright place, which
-  // makes crossing it a decision rather than a default.
-    /*
-   * Moonlight into the open courtyard.
+  /*
+   * Moonlight into the open courtyard — the one genuinely bright place, which
+   * makes crossing it a decision rather than a default.
    *
-   * Cut along with everything else in the darkening pass, which was a mistake:
-   * the courtyard is meant to be the one bright place in the house, and with
-   * it as dim as the rooms there was nowhere the light was doing any work
-   * either. The interiors stay dark; this is the contrast they are dark
-   * against, and it is what makes crossing the open a decision.
+   * A spotlight from the moon itself, not a directional light. A directional
+   * light lit every floor in the house: its shadows only covered the
+   * courtyard, so beyond them it shone straight through the ceilings and
+   * left every room washed in blue from nowhere. A cone from the moon reaches
+   * only the courtyard, and the ceilings and walls shadow the rest.
    */
-  const moon = new THREE.DirectionalLight(0x9db6e0, 2.4);
-  moon.position.set(6, 18, -4);
+  const MOON_AT = new THREE.Vector3(14, 22, -10);
+  const moon = new THREE.SpotLight(0x9db6e0, 2.6, 0, 0.44, 0.35, 0);
+  moon.position.copy(MOON_AT);
   moon.target.position.set(0, 0, 0);
   moon.castShadow = true;
   moon.shadow.mapSize.set(2048, 2048);
-  moon.shadow.camera.left = -16;
-  moon.shadow.camera.right = 16;
-  moon.shadow.camera.top = 14;
-  moon.shadow.camera.bottom = -14;
   moon.shadow.camera.far = 60;
   scene.add(moon);
   scene.add(moon.target);
 
-  /*
-   * Lamps.
-   *
-   * One light per room was enough when rooms were eight metres across; in a
-   * house this size a single point light leaves most of a room unlit and the
-   * corridors pitch black, and with no map a corridor you cannot see is a
-   * corridor you cannot navigate. Long rooms get a lamp at each end.
-   */
-  const LAMP_SPREAD: Record<string, [number, number][]> = {
-    'corridor-s': [[-18, 0], [0, 0], [18, 0]],
-    'corridor-n': [[-18, 0], [0, 0], [18, 0]],
-    'corridor-w': [[0, -14], [0, 0], [0, 14]],
-    'corridor-e': [[0, -14], [0, 0], [0, 14]],
-    verandah: [[-16, 0], [0, 0], [16, 0]],
-    puja: [[-8, 0], [6, 0]],
-    library: [[-6, 0], [8, 0]],
-    kitchen: [[0, -5], [0, 5]],
-    dining: [[0, -5], [0, 5]],
-    'bedroom-south': [[0, -6], [0, 5]],
-    'bedroom-north': [[0, -5], [0, 6]],
-  };
-  for (const r of mansion.rooms) {
-    const st = styleFor(r.name);
-    const offsets = LAMP_SPREAD[r.name] ?? [[0, 0]];
-    // The courtyard is lit by the moon; it gets only a faint warm spill.
-    const scale = r.name === 'courtyard' ? 0.35 : 1;
-    for (const [ox, oz] of offsets) {
-      const l = new THREE.PointLight(st.light, st.intensity * scale, 17, 1.35);
-      l.position.set(r.x + ox, 2.6, r.z + oz);
-      scene.add(l);
-    }
-  }
+  // The moon, where the light comes from. Unfogged, or the haze swallows it.
+  const moonDisc = new THREE.Mesh(
+    track(new THREE.SphereGeometry(1.1, 24, 16)),
+    track(new THREE.MeshBasicMaterial({ color: 0xdfe8f8, fog: false })),
+  );
+  moonDisc.position.copy(MOON_AT);
+  scene.add(moonDisc);
+
+  // --- Torches: every other light in the house. ---
+  const torchView = buildTorches(scene, mansion.torches, (room) => styleFor(room), stage, track);
 
   // --- The key: a small glowing object, the one thing worth crossing the house for. ---
-  const keyMesh = makeKey(track);
+  const { key: keyMesh, glow: keyGlow } = makeKey(track);
   // Placed for real by the frame loop, from the match state.
   keyMesh.position.set(0, 0.5, 0);
   scene.add(keyMesh);
@@ -270,58 +202,91 @@ export function buildWorld(mansion: Mansion): WorldView {
    * information, and a swinging leaf tells you which way something went.
    */
   const roomDoors = new Map<string, THREE.Object3D>();
-  const doorGeo = track(new THREE.BoxGeometry(1, 2.25, 0.07));
+  const doorwaySlots: DoorwaySlot[] = [];
+  const doorGeo = track(new THREE.BoxGeometry(1, DOORWAY_H - 0.05, 0.07));
+  // Stand-ins share one material each: they are all the same plain wood.
+  const doorMat = track(new THREE.MeshStandardMaterial({ color: 0x2a1d14, roughness: 0.75 }));
   for (const d of mansion.doors) {
-    const st = styleFor(d.room);
-    const mat = track(new THREE.MeshStandardMaterial({
-      color: darken(st.wall, 0.42), roughness: 0.75,
-    }));
-    // A pivot at the hinge, with the leaf offset so it swings about its edge.
-    const pivot = new THREE.Object3D();
-    pivot.position.set(d.x, 1.15, d.z);
-    // An 'x' wall runs east-west, so its door faces north-south.
-    pivot.rotation.y = d.axis === 'x' ? 0 : Math.PI / 2;
+    const mat = doorMat;
+    /*
+     * A pair of leaves, hinged at either jamb and meeting in the middle.
+     *
+     * The doorway's local x runs along the wall and its local +z is the
+     * door's +1 swing side: an 'x' wall runs east-west, so that is world +z;
+     * a 'z' wall is turned a quarter so that local +z lands on world +x.
+     */
+    const doorway = new THREE.Object3D();
+    doorway.position.set(d.x, 0, d.z);
+    doorway.rotation.y = d.axis === 'x' ? 0 : Math.PI / 2;
 
-    const leaf = new THREE.Mesh(doorGeo, mat);
-    const w = d.half * 2 * 0.96;
-    leaf.scale.x = w;
-    leaf.position.x = w / 2;
-    leaf.castShadow = true;
-    pivot.add(leaf);
-    // Hinge on one side of the opening.
-    pivot.position.x += d.axis === 'x' ? -d.half : 0;
-    pivot.position.z += d.axis === 'z' ? -d.half : 0;
+    const pivots: THREE.Object3D[] = [];
+    for (const side of [1, -1]) {
+      const pivot = new THREE.Object3D();
+      pivot.position.x = -side * d.half;
+      pivot.userData.side = side;
+      // A plain leaf stands in until the model arrives.
+      const leaf = new THREE.Mesh(doorGeo, mat);
+      const w = d.half * 0.98;
+      leaf.scale.x = w;
+      leaf.position.set(side * w / 2, (DOORWAY_H - 0.05) / 2, 0);
+      leaf.castShadow = true;
+      pivot.add(leaf);
+      doorway.add(pivot);
+      pivots.push(pivot);
+    }
     // Doors start shut. They open as someone reaches them and swing back
     // behind — see `syncDoors` in the renderer.
-    scene.add(pivot);
-    roomDoors.set(d.id, pivot);
+    scene.add(doorway);
+    roomDoors.set(d.id, doorway);
+    doorwaySlots.push({ half: d.half, pivots });
   }
+  const doorView = loadDoors(scene, doorwaySlots, stage, track);
 
-  // --- Hiding spots: almirah bodies and doors, plus a marker for under-spots. ---
+  // --- Hiding spots: the almirahs. Under-spots are the furniture itself. ---
   const hidingDoors = new Map<string, THREE.Object3D>();
+  const wardrobeSlots: WardrobeSlot[] = [];
+  const almirahBody = track(new THREE.BoxGeometry(1.2, 2.0, 0.6));
+  const almirahLeaf = track(new THREE.BoxGeometry(1.1, 1.85, 0.05).translate(-0.55, 0, 0));
+  const almirahMat = track(new THREE.MeshStandardMaterial({ color: 0x24170f, roughness: 0.65 }));
   for (const h of mansion.hidingSpots) {
     if (h.kind === 'almirah') {
-      const st = styleFor(h.room);
-      const bodyMat = track(new THREE.MeshStandardMaterial({ color: darken(st.wall, 0.5), roughness: 0.65 }));
-      const body = new THREE.Mesh(track(new THREE.BoxGeometry(1.1, 2.1, 0.7)), bodyMat);
-      body.position.set(h.x, 1.05, h.z);
-      body.rotation.y = -h.facing;
-      body.castShadow = true;
-      scene.add(body);
+      /*
+       * Turned so its doors face the way the occupant looks, and set back so
+       * the occupant's eye is behind the louvers.
+       *
+       * The sim's facing is a bearing, forward = (cos f, sin f), and the
+       * model's front is +z; turning it by PI/2 - f lines the two up. This
+       * used -f, which left every almirah's door at right angles to the view
+       * from inside it.
+       */
+      const holder = new THREE.Group();
+      holder.position.set(
+        h.x - Math.cos(h.facing) * WARDROBE_PEEK_Z,
+        0,
+        h.z - Math.sin(h.facing) * WARDROBE_PEEK_Z,
+      );
+      holder.rotation.y = Math.PI / 2 - h.facing;
 
-      // The door is a child pivoted at its hinge so it can swing.
-      const pivot = new THREE.Object3D();
-      pivot.position.set(h.x, 1.05, h.z);
-      pivot.rotation.y = -h.facing;
-      const doorMat = track(new THREE.MeshStandardMaterial({ color: darken(st.wall, 0.4), roughness: 0.6 }));
-      const door = new THREE.Mesh(track(new THREE.BoxGeometry(1.0, 1.95, 0.06)), doorMat);
-      door.position.set(0.5, 0, 0.38);
-      door.geometry.translate(-0.5, 0, 0);
-      pivot.add(door);
-      scene.add(pivot);
-      hidingDoors.set(h.id, pivot);
+      // A plain cupboard stands in until the model arrives.
+      const body = new THREE.Mesh(almirahBody, almirahMat);
+      body.position.y = 1.0;
+      body.castShadow = true;
+      holder.add(body);
+
+      // The leaf is a child of `doors`, hinged at its edge so it can swing.
+      const doors = new THREE.Object3D();
+      const door = new THREE.Mesh(almirahLeaf, almirahMat);
+      door.position.set(0.55, 1.0, 0.33);
+      door.userData.openAngle = -0.9;
+      doors.add(door);
+      holder.add(doors);
+
+      scene.add(holder);
+      hidingDoors.set(h.id, doors);
+      wardrobeSlots.push({ holder, doors, standIns: [body, door] });
     }
   }
+  loadWardrobes(scene, wardrobeSlots, stage, track);
 
   return {
     scene,
@@ -329,6 +294,14 @@ export function buildWorld(mansion: Mansion): WorldView {
     gateMesh,
     hidingDoors,
     roomDoors,
+    keyGlow,
+    update: (time) => {
+      doorView.update();
+      propView.update(time);
+      torchView.update(time);
+    },
+    ready: () => stage.ready(),
+    reveal: () => stage.reveal(),
     dispose() {
       for (const d of disposables) d.dispose();
     },
@@ -352,7 +325,9 @@ function makeSolid(geo: THREE.BoxGeometry, mat: THREE.Material, s: Solid): THREE
  * never found, and a survivor wandering past the win condition is not tension,
  * it is a broken objective.
  */
-function makeKey(track: <T extends { dispose(): void }>(o: T) => T): THREE.Object3D {
+function makeKey(
+  track: <T extends { dispose(): void }>(o: T) => T,
+): { key: THREE.Object3D; glow: THREE.PointLight } {
   const g = new THREE.Group();
   const mat = track(new THREE.MeshStandardMaterial({
     color: 0xd9a441, emissive: 0x7a4a10, emissiveIntensity: 1.4, roughness: 0.35, metalness: 0.8,
@@ -368,10 +343,13 @@ function makeKey(track: <T extends { dispose(): void }>(o: T) => T): THREE.Objec
   bit.position.set(0.14, -0.05, 0);
   g.add(bit);
 
-  const glow = new THREE.PointLight(0xffb347, 12, 6, 1.6);
+  const glow = new THREE.PointLight(0xffb347, KEY_GLOW, 6, 1.6);
   g.add(glow);
-  return g;
+  return { key: g, glow };
 }
+
+/** How bright the key glows while it is there to be taken. */
+export const KEY_GLOW = 12;
 
 function darken(hex: number, k: number): number {
   const r = Math.floor(((hex >> 16) & 255) * k);

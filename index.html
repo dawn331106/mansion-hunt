@@ -22,6 +22,8 @@
     overflow: hidden;
     background: var(--bg);
     color: var(--ink);
+    /* No rubber-band bounce or pull-to-refresh while a thumb is on the controls. */
+    overscroll-behavior: none;
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   }
 
@@ -30,7 +32,7 @@
     inset: 0;
     display: block;
   }
-  #gl { z-index: 1; cursor: none; }
+  #gl { z-index: 1; cursor: none; width: 100%; height: 100%; }
   /* The HUD must never eat the click that grabs pointer lock. */
   #hud { z-index: 2; pointer-events: none; }
 
@@ -48,6 +50,9 @@
       rgba(5,5,8,0.94);
     text-align: center;
     padding: 24px;
+    /* Keep menus clear of the notch on a phone held sideways. */
+    padding-left: max(24px, env(safe-area-inset-left));
+    padding-right: max(24px, env(safe-area-inset-right));
     /*
      * Scroll when the content is taller than the screen — a phone held
      * sideways is under 400px tall. Centring with auto margins rather than
@@ -61,7 +66,7 @@
   .overlay > :first-child { margin-top: auto; }
   .overlay > :last-child { margin-bottom: auto; }
   @media (max-height: 500px) {
-    .overlay { gap: 14px; padding: 16px; }
+    .overlay { gap: 14px; padding: 16px max(16px, env(safe-area-inset-right)) 16px max(16px, env(safe-area-inset-left)); }
     h1 { font-size: 30px; }
     button { padding: 12px 22px; }
   }
@@ -164,6 +169,11 @@
   .touch-note { color: #b8a27a; font-size: 12px; letter-spacing: 0.06em; margin: -8px 0 0; }
   body.touch button:hover { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.18); transform: none; }
   body.touch, body.touch * { -webkit-tap-highlight-color: transparent; }
+  /*
+   * iPhone Safari zooms into any form field under 16px when it is tapped, and
+   * does not zoom back out, so the game would start magnified.
+   */
+  body.touch select, body.touch input { font-size: 16px; }
   body.touch #gl { touch-action: none; }
   #touch-ui {
     position: fixed;
@@ -172,6 +182,8 @@
     touch-action: none;
     user-select: none;
     -webkit-user-select: none;
+    /* A long press on a button must not open the iOS callout menu. */
+    -webkit-touch-callout: none;
   }
   #touch-ui .t-zone { position: absolute; top: 0; bottom: 0; }
   #touch-ui .t-move { left: 0; width: 45%; }
@@ -288,7 +300,8 @@
     list-style: none;
     margin: 0;
     padding: 0;
-    min-width: 320px;
+    /* min() so a narrow phone held upright does not scroll sideways. */
+    min-width: min(320px, 100%);
     max-width: 440px;
     width: 100%;
   }
@@ -320,7 +333,7 @@
     letter-spacing: 0.28em;
     text-align: center;
     text-transform: uppercase;
-    width: 280px;
+    width: min(280px, 100%);
     padding: 12px;
     background: rgba(255,255,255,0.05);
     color: #e8d9a8;

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { assetUrl } from './assets.js';
 
 /**
  * The ghost: a rigged, animated 3D figure wearing the supplied face art.
@@ -20,20 +21,6 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
  * rim, because the house is nearly black and the ghost has to read in it.
  */
 
-/**
- * Resolve a file in `public/` against wherever the game is served from.
- *
- * A leading slash would point at the domain root, which is wrong on GitHub
- * Pages: the site lives under `/<repo>/`, so `/assets/ghost.glb` 404s and the
- * house is empty. Vite substitutes `BASE_URL` at build time with the `base`
- * from the config, so this is correct from the root, from a subdirectory, and
- * from a local dev server alike.
- */
-function assetUrl(path: string): string {
-  const base = import.meta.env.BASE_URL || '/';
-  return base.endsWith('/') ? base + path : `${base}/${path}`;
-}
-
 /** The model, served from `public/`. Rebuild it with `tools/build-ghost.py`. */
 export const GHOST_MODEL_URL = assetUrl('assets/ghost.glb');
 
@@ -51,6 +38,14 @@ export interface GhostModel {
    * scene rather than as a flat image pasted over it.
    */
   setLunge(v: number): void;
+  /**
+   * Show or hide the body, leaving its glow in place but dark.
+   *
+   * The glow is a light, and hiding a light changes how many lights every
+   * shader in the scene is built for: the whole house recompiled in the
+   * frame the ghost's own player saw the scare begin.
+   */
+  setBodyVisible(v: boolean): void;
   /** Current world-space Y of the face, so the scare can aim at it. */
   headWorldY(): number;
   dispose(): void;
@@ -184,7 +179,8 @@ export function createGhost(): GhostModel {
 
   // The ghost carries its own faint red glow, so it separates from a dark wall
   // and so survivors get a half-second of warning.
-  const glow = new THREE.PointLight(0xa04444, 6.0, 6.0, 1.7);
+  const GLOW = 6.0;
+  const glow = new THREE.PointLight(0xa04444, GLOW, 6.0, 1.7);
   glow.position.set(0, 1.3, 0.35);
   group.add(glow);
 
@@ -199,6 +195,11 @@ export function createGhost(): GhostModel {
 
   return {
     object: group,
+
+    setBodyVisible(v) {
+      if (modelRoot) modelRoot.visible = v;
+      glow.intensity = v ? GLOW : 0;
+    },
 
     update(_dt, time, camera) {
       // The renderer passes no dt, so derive it from the clock it does pass.

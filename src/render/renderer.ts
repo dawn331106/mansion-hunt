@@ -5,7 +5,7 @@ import type { GameState, Role } from '../game/types.js';
 import { createPulseMark, createSurvivor, type SurvivorModel } from './actors.js';
 import { createGhost, type GhostModel } from './ghostModel.js';
 import { createJumpscare, type Jumpscare } from './jumpscare.js';
-import { buildWorld, type WorldView } from './world.js';
+import { buildWorld, KEY_GLOW, type WorldView } from './world.js';
 
 /**
  * Drawing the house and everyone in it.
@@ -52,17 +52,32 @@ export class Renderer {
       antialias: true,
       powerPreference: 'high-performance',
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Past 1.5 the extra pixels are not visible in a scene this dark, and
+    // every one of them is shaded against every torch.
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     // A filmic curve keeps the highlights from blowing out in a scene this
     // dark, where a single point light is the brightest thing on screen.
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
+    this.renderer.toneMappingExposure = 0.95;
 
     this.camera = new THREE.PerspectiveCamera(BASE_FOV, 1, 0.05, 90);
 
     this.world = buildWorld(mansion);
+    /*
+     * Compile every shader in the background before the models appear.
+     *
+     * Each model arriving used to stall a frame while its materials were
+     * compiled on the spot, which is the stutter at the start of a match.
+     * Once every load has settled, the whole scene — hidden models, the
+     * jumpscare, the ghost — is compiled off the main path, and only then are
+     * the stand-in boxes swapped for the models.
+     */
+    void this.world.ready()
+      .then(() => this.renderer.compileAsync(this.world.scene, this.camera))
+      .catch(() => undefined)
+      .then(() => this.world.reveal());
     this.ghostModel = createGhost();
     this.world.scene.add(this.ghostModel.object);
 
@@ -138,7 +153,7 @@ export class Renderer {
     this.ghostModel.update(0, time, this.camera);
     // Playing as the ghost, your own body would fill the screen; hide it —
     // except during the scare, where it is the whole point.
-    this.ghostModel.object.visible = role !== 'ghost' || this.scareGhost !== null;
+    this.ghostModel.setBodyVisible(role !== 'ghost' || this.scareGhost !== null);
   }
 
   /**
@@ -162,8 +177,8 @@ export class Renderer {
     }
 
     for (const d of this.mansion.doors) {
-      const pivot = this.world.roomDoors.get(d.id);
-      if (!pivot) continue;
+      const doorway = this.world.roomDoors.get(d.id);
+      if (!doorway) continue;
 
       // Open when anything is within reach of the opening.
       let near = false;
@@ -171,17 +186,25 @@ export class Renderer {
         if (Math.hypot(b.x - d.x, b.z - d.z) < DOOR_OPEN_RANGE) { near = true; break; }
       }
 
-      const base = d.axis === 'x' ? 0 : Math.PI / 2;
-      const want = base + (near ? d.swing * DOOR_OPEN_ANGLE : 0);
       // Opening is quick and closing is slow, which is how a heavy door
       // behaves and gives the swing-back time to be noticed.
       const speed = near ? 7.0 : 2.2;
-      pivot.rotation.y += (want - pivot.rotation.y) * Math.min(1, dt * speed);
+      // Both leaves swing to the same side of the wall, so they turn in
+      // opposite senses: a negative turn sends the -x leaf toward local +z.
+      for (const pivot of doorway.children) {
+        const side = pivot.userData.side as number;
+        const want = near ? -side * d.swing * DOOR_OPEN_ANGLE : 0;
+        pivot.rotation.y += (want - pivot.rotation.y) * Math.min(1, dt * speed);
+      }
     }
   }
 
   private syncProps(state: GameState, time: number): void {
-    this.world.keyMesh.visible = !state.key.taken;
+    this.world.update(time);
+    // The key's light is dimmed rather than hidden; see `keyGlow`.
+    for (const c of this.world.keyMesh.children) c.visible = !state.key.taken;
+    this.world.keyGlow.visible = true;
+    this.world.keyGlow.intensity = state.key.taken ? 0 : KEY_GLOW;
     if (!state.key.taken) {
       this.world.keyMesh.position.set(state.key.x, 0.45 + Math.sin(time * 1.8) * 0.06, state.key.z);
       this.world.keyMesh.rotation.y = time * 0.9;
@@ -195,12 +218,12 @@ export class Renderer {
 
     // Almirah doors stand open when nobody is inside, shut when occupied —
     // which is exactly the tell a hunting ghost learns to read.
-    for (const [id, pivot] of this.world.hidingDoors) {
+    for (const [id, doors] of this.world.hidingDoors) {
       const occupied = state.survivors.some((s) => s.hidden?.spotId === id);
-      const want = occupied ? 0 : -0.9;
-      pivot.children[0].rotation.y = THREE.MathUtils.lerp(
-        pivot.children[0].rotation.y, want, 0.12,
-      );
+      for (const leaf of doors.children) {
+        const want = occupied ? 0 : (leaf.userData.openAngle as number);
+        leaf.rotation.y = THREE.MathUtils.lerp(leaf.rotation.y, want, 0.12);
+      }
     }
   }
 
