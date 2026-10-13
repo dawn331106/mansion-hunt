@@ -41,6 +41,18 @@ const TORCH_INTENSITY = 11;
 const TORCH_RANGE = 14;
 const TORCH_DECAY = 1.45;
 
+/**
+ * Corridors and passages burn harder and reach further.
+ *
+ * A room is small enough for one torch to reach its corners; a corridor is
+ * forty metres of wall with a torch every dozen, and at room strength the
+ * stretches between them went black — not frightening, just unreadable.
+ */
+const PASSAGE_INTENSITY = 16;
+const PASSAGE_RANGE = 18;
+const isPassage = (room: string) =>
+  room.startsWith('corridor') || room.startsWith('outer') || room.startsWith('spur');
+
 export interface TorchView {
   /** Flicker the light. */
   update(time: number): void;
@@ -60,17 +72,19 @@ export function buildTorches(
   stage: Stage,
   track: <T extends { dispose(): void }>(o: T) => T,
 ): TorchView {
-  const lights: { light: THREE.PointLight; phase: number }[] = [];
+  const lights: { light: THREE.PointLight; base: number; phase: number }[] = [];
 
   torches.forEach((t, i) => {
     const color = FIRE.clone().lerp(new THREE.Color(tint(t.room).light), 0.45);
-    const light = new THREE.PointLight(color, TORCH_INTENSITY, TORCH_RANGE, TORCH_DECAY);
+    const passage = isPassage(t.room);
+    const base = passage ? PASSAGE_INTENSITY : TORCH_INTENSITY;
+    const light = new THREE.PointLight(color, base, passage ? PASSAGE_RANGE : TORCH_RANGE, TORCH_DECAY);
     // Out from the wall along the bracket's facing, at the flame.
     light.position.set(
       t.x + Math.sin(t.rot) * FLAME_OUT, FLAME_Y, t.z + Math.cos(t.rot) * FLAME_OUT,
     );
     scene.add(light);
-    lights.push({ light, phase: i * 2.37 });
+    lights.push({ light, base, phase: i * 2.37 });
   });
 
   stage.wait(new GLTFLoader().loadAsync(TORCH_MODEL_URL).then((gltf) => {
@@ -94,7 +108,7 @@ export function buildTorches(
       // About +/-15%, from two unrelated wobbles so it never settles into a beat.
       for (const l of lights) {
         const f = 1 + 0.09 * Math.sin(time * 9.3 + l.phase) + 0.06 * Math.sin(time * 23.1 + l.phase * 1.7);
-        l.light.intensity = TORCH_INTENSITY * f;
+        l.light.intensity = l.base * f;
       }
     },
   };

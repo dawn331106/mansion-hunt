@@ -677,10 +677,11 @@ export function buildMansion(): Mansion {
    * torches is real dark. Each sits flat on a wall face, clear of doorways
    * and of the wardrobes and tall pieces that stand against walls.
    *
-   * One to a room, one to each inner corridor, two along each long outer
-   * passage, and a pair at the gate. Twice this many made the house bright
-   * from end to end, and every torch is a light every pixel is shaded
-   * against, so the count is the frame rate too.
+   * One to a room, three along each inner corridor, one in each long spur,
+   * four along the outer passages north and south and two on each side, and
+   * a pair at the gate. More than this lit the house from end to end, and
+   * every torch is a light every pixel is shaded against, so the count is
+   * the frame rate too. Fewer left the corridors too dark to read.
    */
   const torches: Torch[] = [];
   const torch = (x: number, z: number, rot: number, room: string) =>
@@ -708,17 +709,37 @@ export function buildMansion(): Mansion {
 
   // The inner ring.
   torch(0, -7 - T, FACE_S, 'corridor-s');
+  torch(-12.5, -13 + T, FACE_N, 'corridor-s');
+  torch(12.0, -13 + T, FACE_N, 'corridor-s');
   torch(0, 7 + T, FACE_N, 'corridor-n');
+  torch(-13.5, 13 - T, FACE_S, 'corridor-n');
+  torch(12.0, 13 - T, FACE_S, 'corridor-n');
   torch(-9 - T, 4.5, FACE_W, 'corridor-w');
+  torch(-21 + T, -11.0, FACE_E, 'corridor-w');
+  torch(-21 + T, 11.5, FACE_E, 'corridor-w');
   torch(9 + T, -4.5, FACE_E, 'corridor-e');
+  torch(21 - T, -10.5, FACE_W, 'corridor-e');
+  torch(21 - T, 6.5, FACE_W, 'corridor-e');
+
+  // The spurs between the rings.
+  torch(-21 - T, -15.5, FACE_W, 'spur-sw');
+  torch(25 - T, -15.5, FACE_W, 'spur-se');
+  torch(-21 - T, 20.5, FACE_W, 'spur-nw');
+  torch(21 + T, 20.5, FACE_E, 'spur-ne');
 
   // The outer ring.
   torch(-27, -29 + T, FACE_N, 'outer-s');
+  torch(-9, -29 + T, FACE_N, 'outer-s');
+  torch(9, -29 + T, FACE_N, 'outer-s');
   torch(27, -29 + T, FACE_N, 'outer-s');
+  torch(-24, 29 - T, FACE_S, 'outer-n');
   torch(-10, 29 - T, FACE_S, 'outer-n');
   torch(10, 29 - T, FACE_S, 'outer-n');
-  torch(-37 + T, 0, FACE_E, 'outer-w');
-  torch(37 - T, 0, FACE_W, 'outer-e');
+  torch(24, 29 - T, FACE_S, 'outer-n');
+  torch(-37 + T, -12, FACE_E, 'outer-w');
+  torch(-37 + T, 12, FACE_E, 'outer-w');
+  torch(37 - T, -8, FACE_W, 'outer-e');
+  torch(37 - T, 8, FACE_W, 'outer-e');
 
   /*
    * Hiding spots, placed against a wall and clear of the furniture.
